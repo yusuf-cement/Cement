@@ -1,0 +1,16 @@
+# نشر على Render (خدمة ويب مع قرص دائم). القرص الدائم يتطلب خطة مدفوعة.
+services:
+  - type: web
+    name: cement-world
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/catalog
+    envVars:
+      - key: ADMIN_USER
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: cement-data
+      mountPath: /data
+      sizeGB: 1

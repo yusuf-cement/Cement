@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>مستند الطلب - عالم الأسمنت</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+body{background:#fff}
+.doc{max-width:760px;margin:0 auto;padding:18px}
+.doc h1{margin:0;font-size:26px;color:var(--gd)}
+.doc .hd{display:flex;justify-content:space-between;gap:12px;border-bottom:3px solid var(--g);padding-bottom:10px;margin-bottom:12px}
+.doc .kind{font-size:22px;font-weight:800;border:2px solid var(--g);border-radius:8px;padding:2px 14px;align-self:flex-start}
+.doc table{width:100%;border-collapse:collapse;margin:10px 0}
+.doc th,.doc td{border:1px solid var(--line);padding:6px 8px;text-align:start}
+.doc th{background:var(--beige)}
+.tools{text-align:center;padding:10px}
+@media print{.tools{display:none}body{background:#fff}.doc{padding:0}}
+</style>
+</head>
+<body>
+<div class="tools"><button class="btn" id="print">طباعة / حفظ PDF</button></div>
+<div class="doc" id="doc">جارٍ التحميل…</div>
+<script src="/invoice.js" type="module"></script>
+</body>
+</html>
