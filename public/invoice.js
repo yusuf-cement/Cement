@@ -15,7 +15,7 @@ async function main() {
     document.title = `${title} ${o.number}`;
     const unconfirmed = ['طلب غير مؤكد', 'عرض سعر'].includes(o.doc_kind);
     doc.replaceChildren(
-      h('div', { class: 'hd' }, h('div', {}, h('h1', {}, store.name || store.store_name || 'عالم الأسمنت'), h('div', {}, store.city), h('div', { dir: 'ltr', style: 'text-align:right' }, store.phone)), h('div', { class: 'kind' }, title)),
+      h('div', { class: 'hd' }, h('div', {}, h('h1', {}, store.name || store.store_name || 'عالم الأسمنت ومواد البناء'), h('div', {}, store.city), h('div', { dir: 'ltr', style: 'text-align:right' }, store.phone)), h('div', { class: 'kind' }, title)),
       h('table', {}, h('tbody', {},
         h('tr', {}, h('th', {}, 'رقم الطلب'), h('td', {}, o.number), h('th', {}, 'تاريخ الطلب'), h('td', {}, dt(o.created_at))),
         o.invoice_no ? h('tr', {}, h('th', {}, 'رقم الفاتورة'), h('td', {}, o.invoice_no), h('th', {}, 'تاريخ التسليم'), h('td', {}, dt(o.delivered_at))) : null,

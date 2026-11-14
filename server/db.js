@@ -5,22 +5,11 @@ import path from 'node:path';
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
 fs.mkdirSync(path.join(DATA_DIR, 'uploads'), { recursive: true });
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS users(
-  id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, pass_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN('owner','staff')), active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')));
-CREATE TABLE IF NOT EXISTS sessions(
-  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS audit_log(
-  id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (datetime('now')), actor TEXT, action TEXT NOT NULL, detail TEXT);
-CREATE TABLE IF NOT EXISTS factories(
-  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS products(
-  id INTEGER PRIMARY KEY, factory_id INTEGER NOT NULL REFERENCES factories(id),
+const productsDDL = (T) => `
+CREATE TABLE IF NOT EXISTS ${T}(
+  id INTEGER PRIMARY KEY, factory_id INTEGER NOT NULL REFERENCES factories(id), category_id INTEGER REFERENCES categories(id),
   name TEXT NOT NULL, cement_type TEXT, spec TEXT,
-  unit TEXT NOT NULL CHECK(unit IN('bag','ton')), bag_weight_kg REAL, image TEXT,
+  unit TEXT NOT NULL, bag_weight_kg REAL, image TEXT,
   retail_price INTEGER NOT NULL CHECK(retail_price>=0),
   discount_percent REAL NOT NULL DEFAULT 0 CHECK(discount_percent>=0 AND discount_percent<=100),
   offer_note TEXT,
@@ -31,7 +20,23 @@ CREATE TABLE IF NOT EXISTS products(
   active INTEGER NOT NULL DEFAULT 1, paused INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK(reserved<=stock+0.0001));
-CREATE TABLE IF NOT EXISTS customers(
+`;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, pass_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN('owner','staff')), active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE IF NOT EXISTS sessions(
+  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_log(
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (datetime('now')), actor TEXT, action TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS categories(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS factories(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0);
+${productsDDL('products')}CREATE TABLE IF NOT EXISTS customers(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT UNIQUE NOT NULL,
   wholesale_approved INTEGER NOT NULL DEFAULT 0, notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
@@ -74,11 +79,11 @@ CREATE TABLE IF NOT EXISTS stock_movements(
 `;
 
 const DEFAULT_SETTINGS = {
-  store_name: 'عالم الأسمنت',
+  store_name: 'عالم الأسمنت ومواد البناء',
   phone: '775477377',
   whatsapp: '967775477377',
   city: 'مأرب، اليمن',
-  warehouse_name: 'مستودع عالم الأسمنت - مأرب',
+  warehouse_name: 'مستودع عالم الأسمنت ومواد البناء - مأرب',
   warehouse_address: 'مأرب (يُحدَّد العنوان التفصيلي من لوحة الإدارة)',
   warehouse_hours: 'يوميًا من 8 صباحًا إلى 5 مساءً',
   bank_note: 'للتحويل: يتم تزويدك بتفاصيل الحساب من الإدارة بعد مراجعة الطلب.',
@@ -86,10 +91,35 @@ const DEFAULT_SETTINGS = {
   wholesale_min_tons: '10',
 };
 
+
+/** ترقية آمنة لقاعدة بيانات قديمة دون فقدان أي بيانات */
+function migrate(db) {
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'").get()?.sql || '';
+  const cols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
+  if (/CHECK\(unit IN/.test(sql) || !cols.includes('category_id')) {
+    const keep = cols.filter((c) => c !== 'category_id').join(',');
+    db.exec('PRAGMA foreign_keys=OFF');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(productsDDL('products_new'));
+      db.exec(`INSERT INTO products_new(${keep}) SELECT ${keep} FROM products`);
+      db.exec('DROP TABLE products');
+      db.exec('ALTER TABLE products_new RENAME TO products');
+      const bad = db.prepare('PRAGMA foreign_key_check').all();
+      if (bad.length) throw new Error('فشل التحقق من سلامة العلاقات بعد الترقية');
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; } finally { db.exec('PRAGMA foreign_keys=ON'); }
+  }
+  // تحديث الاسم الافتراضي القديم فقط إن لم يغيّره المدير
+  db.prepare("UPDATE settings SET value='عالم الأسمنت ومواد البناء' WHERE key='store_name' AND value='عالم الأسمنت'").run();
+  db.prepare("UPDATE settings SET value='مستودع عالم الأسمنت ومواد البناء - مأرب' WHERE key='warehouse_name' AND value='مستودع عالم الأسمنت - مأرب'").run();
+}
+
 export function openDb(file = process.env.DB_FILE || path.join(DATA_DIR, 'cement.db')) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
   db.exec(SCHEMA);
+  migrate(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   return db;

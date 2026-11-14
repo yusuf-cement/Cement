@@ -8,6 +8,7 @@ import {
   HttpError, STATUS_LABELS, priceCart, createOrder, orderAction, publicOrder, adminOrder, stockOp, r3,
 } from './orders.js';
 import { dashboard, report, csvExport } from './reports.js';
+import { UNITS, isUnit, unitIsInt, defaultWholesaleMin } from './units.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = {
@@ -89,14 +90,16 @@ export function createApp(db) {
   function cleanProduct(b) {
     const factory_id = num(b.factory_id, { int: true, label: 'المصنع' });
     if (!db.prepare('SELECT 1 FROM factories WHERE id=?').get(factory_id)) throw new HttpError(400, 'المصنع غير موجود');
-    const unit = b.unit === 'ton' ? 'ton' : b.unit === 'bag' ? 'bag' : null;
+    const unit = isUnit(b.unit) ? b.unit : null;
     if (!unit) throw new HttpError(400, 'اختر وحدة البيع');
+    const category_id = b.category_id ? num(b.category_id, { int: true, label: 'التصنيف' }) : null;
+    if (category_id && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(category_id)) throw new HttpError(400, 'التصنيف غير موجود');
     const image = b.image ? String(b.image) : null;
     if (image && !/^\/uploads\/[a-f0-9]{32}\.(png|jpg|webp)$/.test(image)) throw new HttpError(400, 'مسار الصورة غير صحيح');
     return {
-      factory_id, unit, image,
+      factory_id, category_id, unit, image,
       name: str(b.name, 120, true, 'اسم المنتج'), cement_type: str(b.cement_type, 60), spec: str(b.spec, 500),
-      bag_weight_kg: unit === 'bag' ? num(b.bag_weight_kg, { min: 1, max: 100, label: 'وزن الكيس' }) : null,
+      bag_weight_kg: unit === 'bag' && b.bag_weight_kg ? num(b.bag_weight_kg, { min: 0.1, max: 200, label: 'وزن الكيس' }) : null,
       retail_price: num(b.retail_price, { int: true, label: 'سعر التجزئة' }),
       discount_percent: num(b.discount_percent ?? 0, { max: 100, label: 'نسبة الخصم' }),
       offer_note: str(b.offer_note, 200),
@@ -120,17 +123,18 @@ export function createApp(db) {
   /* ===== واجهة العملاء ===== */
   route('GET', '/api/catalog', () => {
     const settings = getSettings(db);
-    const products = db.prepare(`SELECT p.id,p.factory_id,f.name factory_name,p.name,p.cement_type,p.spec,p.unit,p.bag_weight_kg,p.image,
+    const products = db.prepare(`SELECT p.id,p.factory_id,f.name factory_name,p.category_id,c.name category_name,p.name,p.cement_type,p.spec,p.unit,p.bag_weight_kg,p.image,
       p.retail_price,p.discount_percent,p.offer_note,p.min_order,p.wholesale_min,p.low_stock_at,p.paused,ROUND(p.stock-p.reserved,3) available
-      FROM products p JOIN factories f ON f.id=p.factory_id WHERE p.active=1 AND f.active=1 ORDER BY f.sort,f.name,p.name`).all()
+      FROM products p JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND f.active=1 ORDER BY f.sort,f.name,p.name`).all()
       .map((p) => ({
         ...p, price: Math.round(p.retail_price * (1 - p.discount_percent / 100)),
-        wholesale_min: p.wholesale_min ?? Number(p.unit === 'bag' ? settings.wholesale_min_bags : settings.wholesale_min_tons),
+        wholesale_min: p.wholesale_min ?? defaultWholesaleMin(settings, p.unit),
         availability: p.paused ? 'paused' : p.available <= 0 ? 'out' : p.available <= p.low_stock_at ? 'low' : 'available',
         low_stock_at: undefined,
       }));
     return {
-      store: publicFields(settings), statusLabels: STATUS_LABELS,
+      store: publicFields(settings), statusLabels: STATUS_LABELS, units: UNITS,
+      categories: db.prepare('SELECT id,name FROM categories WHERE active=1 ORDER BY sort,name').all(),
       factories: db.prepare('SELECT id,name FROM factories WHERE active=1 ORDER BY sort,name').all(),
       products, zones: db.prepare('SELECT id,name,indicative_fee FROM zones WHERE active=1 ORDER BY name').all(),
     };
@@ -181,7 +185,7 @@ export function createApp(db) {
     if (m) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha(m[1]));
     return { headers: { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' }, body: { ok: true } };
   });
-  route('GET', '/api/admin/me', (ctx) => { requireUser(ctx); return { username: ctx.user.username, role: ctx.user.role, statusLabels: STATUS_LABELS, store: publicFields(getSettings(db)) }; });
+  route('GET', '/api/admin/me', (ctx) => { requireUser(ctx); return { username: ctx.user.username, role: ctx.user.role, statusLabels: STATUS_LABELS, units: UNITS, store: publicFields(getSettings(db)) }; });
   route('GET', '/api/admin/summary', (ctx) => { requireUser(ctx); return dashboard(db); });
 
   /* ===== المصانع ===== */
@@ -204,21 +208,41 @@ export function createApp(db) {
     return { ok: true };
   });
 
+  /* ===== التصنيفات ===== */
+  route('GET', '/api/admin/categories', (ctx) => { requireUser(ctx); return db.prepare('SELECT * FROM categories ORDER BY sort,name').all(); });
+  route('POST', '/api/admin/categories', (ctx) => {
+    requireOwner(ctx);
+    try {
+      const id = Number(db.prepare('INSERT INTO categories(name,sort) VALUES(?,?)').run(str(ctx.body.name, 80, true, 'اسم التصنيف'), num(ctx.body.sort ?? 0, { int: true })).lastInsertRowid);
+      audit(ctx.user.username, 'category_create', ctx.body.name);
+      return { status: 201, body: { id } };
+    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'التصنيف موجود مسبقًا'); }
+  });
+  route('PUT', '/api/admin/categories/:id', (ctx) => {
+    requireOwner(ctx);
+    try {
+      db.prepare('UPDATE categories SET name=?, active=?, sort=? WHERE id=?')
+        .run(str(ctx.body.name, 80, true, 'اسم التصنيف'), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, num(ctx.body.sort ?? 0, { int: true }), Number(ctx.params.id));
+    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'الاسم مستخدم'); }
+    audit(ctx.user.username, 'category_update', ctx.params.id);
+    return { ok: true };
+  });
+
   /* ===== المنتجات والمخزون ===== */
   route('GET', '/api/admin/products', (ctx) => {
     requireUser(ctx);
-    return db.prepare(`SELECT p.*, f.name factory_name, ROUND(p.stock-p.reserved,3) available FROM products p
-      JOIN factories f ON f.id=p.factory_id ORDER BY f.name,p.name`).all();
+    return db.prepare(`SELECT p.*, f.name factory_name, c.name category_name, ROUND(p.stock-p.reserved,3) available FROM products p
+      JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id ORDER BY f.name,p.name`).all();
   });
   route('POST', '/api/admin/products', (ctx) => {
     requireOwner(ctx);
     const c = cleanProduct(ctx.body);
     const stock = num(ctx.body.stock ?? 0, { label: 'المخزون الافتتاحي' });
-    if (c.unit === 'bag' && !Number.isInteger(stock)) throw new HttpError(400, 'أكياس الأسمنت يجب أن تكون أعدادًا صحيحة');
+    if (unitIsInt(c.unit) && !Number.isInteger(stock)) throw new HttpError(400, 'هذه الوحدة تُباع بأعداد صحيحة فقط');
     const id = tx(db, () => {
-      const r = db.prepare(`INSERT INTO products(factory_id,name,cement_type,spec,unit,bag_weight_kg,image,retail_price,discount_percent,offer_note,
-        stock,min_order,wholesale_min,wholesale_hint,low_stock_at,active,paused) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(c.factory_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
+      const r = db.prepare(`INSERT INTO products(factory_id,category_id,name,cement_type,spec,unit,bag_weight_kg,image,retail_price,discount_percent,offer_note,
+        stock,min_order,wholesale_min,wholesale_hint,low_stock_at,active,paused) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
           stock, c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused);
       const pid = Number(r.lastInsertRowid);
       if (stock > 0) db.prepare('INSERT INTO stock_movements(at,product_id,kind,qty,stock_after,note,actor) VALUES(?,?,?,?,?,?,?)').run(now(), pid, 'in', stock, stock, 'رصيد افتتاحي', ctx.user.username);
@@ -232,9 +256,9 @@ export function createApp(db) {
     const id = Number(ctx.params.id), old = db.prepare('SELECT * FROM products WHERE id=?').get(id);
     if (!old) throw new HttpError(404, 'المنتج غير موجود');
     const c = cleanProduct(ctx.body);
-    db.prepare(`UPDATE products SET factory_id=?,name=?,cement_type=?,spec=?,unit=?,bag_weight_kg=?,image=?,retail_price=?,discount_percent=?,offer_note=?,
+    db.prepare(`UPDATE products SET factory_id=?,category_id=?,name=?,cement_type=?,spec=?,unit=?,bag_weight_kg=?,image=?,retail_price=?,discount_percent=?,offer_note=?,
       min_order=?,wholesale_min=?,wholesale_hint=?,low_stock_at=?,active=?,paused=?,updated_at=? WHERE id=?`)
-      .run(c.factory_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
+      .run(c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
         c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused, now(), id);
     audit(ctx.user.username, 'product_update', `${id} ${c.name}${old.retail_price !== c.retail_price ? ` السعر ${old.retail_price}←${c.retail_price}` : ''}`);
     return { ok: true };

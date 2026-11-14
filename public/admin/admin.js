@@ -1,4 +1,4 @@
-import { h, fmt, money, unitName, qtyText, dt, waLink, api, toast, field } from '/common.js';
+import { h, fmt, money, unitName, setUnits, UNITS, qtyText, dt, waLink, api, toast, field } from '/common.js';
 
 const app = document.getElementById('app');
 let me = null, labels = {}, pollTimer = null, lastNew = null;
@@ -24,7 +24,7 @@ function viewLogin(msg) {
 const TABS = [['dash', 'المؤشرات'], ['orders', 'الطلبات'], ['products', 'المنتجات'], ['customers', 'العملاء'], ['delivery', 'التوصيل'], ['reports', 'التقارير', true], ['settings', 'الإعدادات', true]];
 function shell(content, active) {
   return [
-    h('header', { class: 'top' }, h('div', { class: 'wrap' }, h('a', { class: 'brand', href: '#/dash' }, h('span', {}, 'لوحة عالم الأسمنت')), h('span', { style: 'flex:1' }),
+    h('header', { class: 'top' }, h('div', { class: 'wrap' }, h('a', { class: 'brand', href: '#/dash' }, h('span', {}, 'لوحة ' + (me.store?.store_name || 'عالم الأسمنت ومواد البناء'))), h('span', { style: 'flex:1' }),
       h('span', { style: 'font-size:14px' }, me.username), h('button', { class: 'iconbtn', onclick: async () => { await A('POST', '/api/admin/logout', {}); me = null; viewLogin(); } }, 'خروج'))),
     h('nav', { class: 'sub' }, h('div', { class: 'wrap' }, TABS.filter((t) => !t[2] || owner()).map(([k, t]) => h('a', { href: '#/' + k, class: active === k ? 'on' : '' }, t, k === 'orders' ? h('span', { class: 'iconbtn n', id: 'newbadge', style: 'border:0;padding:0 7px;margin-inline-start:4px;background:#d8a31a;color:#000;border-radius:99px', hidden: true }) : null)))),
     h('div', { class: 'wrap' }, content),
@@ -45,7 +45,7 @@ async function poll() {
     const s = await A('GET', '/api/admin/summary');
     const n = s.counts.new;
     const b = document.getElementById('newbadge'); if (b) { b.hidden = !n; b.textContent = n; }
-    document.title = (n ? `(${n}) ` : '') + 'لوحة إدارة عالم الأسمنت';
+    document.title = (n ? `(${n}) ` : '') + 'لوحة إدارة ' + (me?.store?.store_name || 'المتجر');
     if (lastNew !== null && n > lastNew) { beep(); toast(`وصل ${n - lastNew} طلب جديد`); if (location.hash.startsWith('#/orders') || location.hash.startsWith('#/dash')) route(); }
     lastNew = n;
   } catch (e) { if (e.status === 401) { me = null; viewLogin('انتهت الجلسة'); } }
@@ -178,15 +178,15 @@ async function viewProducts() {
   const box = h('div', {}, loading()); mount(box, 'products');
   const load = async () => {
     try {
-      const [prods, facs] = await Promise.all([A('GET', '/api/admin/products'), A('GET', '/api/admin/factories')]);
+      const [prods, facs, cats] = await Promise.all([A('GET', '/api/admin/products'), A('GET', '/api/admin/factories'), A('GET', '/api/admin/categories')]);
       box.replaceChildren(h('h2', { class: 'sec' }, 'المنتجات والمخزون'),
-        owner() ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => productForm(null, facs, load) }, '+ منتج جديد'), h('button', { class: 'btn alt', onclick: () => factoryForm(facs, load) }, 'إدارة المصانع')) : null,
+        owner() ? h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => productForm(null, facs, cats, load) }, '+ منتج جديد'), h('button', { class: 'btn alt', onclick: () => listForm('المصانع والعلامات التجارية', facs, '/api/admin/factories', 'مصنع / علامة جديدة', load) }, 'إدارة المصانع'), h('button', { class: 'btn alt', onclick: () => listForm('التصنيفات', cats, '/api/admin/categories', 'تصنيف جديد', load) }, 'إدارة التصنيفات')) : null,
         h('div', { class: 'scroll', style: 'margin-top:10px' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['المنتج', 'السعر', 'المخزون', 'محجوز', 'متاح', 'الحالة', ''].map((t) => h('th', {}, t)))),
-          h('tbody', {}, prods.map((p) => h('tr', {}, h('td', {}, h('b', {}, p.factory_name), h('div', {}, p.name)), h('td', {}, money(p.retail_price), p.discount_percent > 0 ? h('div', { class: 'hint' }, `خصم ${p.discount_percent}%`) : null, h('div', { class: 'hint' }, 'لكل ' + unitName(p.unit))),
+          h('tbody', {}, prods.map((p) => h('tr', {}, h('td', {}, h('b', {}, p.factory_name), h('div', {}, p.name), p.category_name ? h('div', { class: 'hint' }, p.category_name) : null), h('td', {}, money(p.retail_price), p.discount_percent > 0 ? h('div', { class: 'hint' }, `خصم ${p.discount_percent}%`) : null, h('div', { class: 'hint' }, 'لكل ' + unitName(p.unit))),
             h('td', {}, qtyText(p.stock, p.unit)), h('td', {}, fmt(p.reserved)), h('td', {}, h('span', { class: 'pill' + (p.available <= p.low_stock_at ? ' new' : '') }, fmt(p.available))),
             h('td', {}, p.active ? (p.paused ? h('span', { class: 'pill new' }, 'متوقف مؤقتًا') : h('span', { class: 'pill done' }, 'معروض')) : h('span', { class: 'pill cancelled' }, 'مخفي')),
-            h('td', {}, h('div', { class: 'btns' }, h('button', { class: 'btn small alt', onclick: () => stockForm(p, load) }, 'المخزون'), owner() ? h('button', { class: 'btn small alt', onclick: () => productForm(p, facs, load) }, 'تعديل') : null))))))),
-        !prods.length ? h('div', { class: 'panel empty' }, owner() ? 'أضف مصنعًا ثم منتجًا لتبدأ.' : 'لا توجد منتجات.') : null);
+            h('td', {}, h('div', { class: 'btns' }, h('button', { class: 'btn small alt', onclick: () => stockForm(p, load) }, 'المخزون'), owner() ? h('button', { class: 'btn small alt', onclick: () => productForm(p, facs, cats, load) }, 'تعديل') : null))))))),
+        !prods.length ? h('div', { class: 'panel empty' }, owner() ? 'أضف مصنعًا (أو علامة تجارية) وتصنيفًا ثم منتجًا لتبدأ.' : 'لا توجد منتجات.') : null);
     } catch (e) { guard(box)(e); }
   };
   load();
@@ -196,18 +196,19 @@ function modal(title, body) {
     h('div', { class: 'panel', style: 'max-width:640px;margin:20px auto' }, h('h2', {}, title), body, h('p', {}, h('button', { class: 'btn alt small', onclick: () => m.remove() }, 'إغلاق'))));
   document.body.append(m); return m;
 }
-function factoryForm(facs, done) {
-  const name = h('input', { placeholder: 'اسم المصنع أو العلامة التجارية' });
-  const m = modal('المصانع والعلامات التجارية', h('div', {},
-    h('table', { class: 'tbl' }, h('tbody', {}, facs.map((f) => h('tr', {}, h('td', {}, f.name), h('td', {}, f.active ? 'ظاهر' : 'مخفي'), h('td', {}, h('button', { class: 'btn small alt', onclick: async () => { try { await A('PUT', '/api/admin/factories/' + f.id, { name: f.name, active: !f.active, sort: f.sort }); m.remove(); done(); } catch (e) { toast(e.message, true); } } }, f.active ? 'إخفاء' : 'إظهار')))))),
-    h('div', { class: 'bar' }, field('مصنع جديد', name), h('button', { class: 'btn small', onclick: async () => { try { await A('POST', '/api/admin/factories', { name: name.value }); toast('تمت الإضافة'); m.remove(); done(); } catch (e) { toast(e.message, true); } } }, 'إضافة'))));
+function listForm(title, items, endpoint, newLabel, done) {
+  const name = h('input', { placeholder: newLabel });
+  const m = modal(title, h('div', {},
+    h('table', { class: 'tbl' }, h('tbody', {}, items.map((f) => h('tr', {}, h('td', {}, f.name), h('td', {}, f.active ? 'ظاهر' : 'مخفي'), h('td', {}, h('button', { class: 'btn small alt', onclick: async () => { try { await A('PUT', `${endpoint}/${f.id}`, { name: f.name, active: !f.active, sort: f.sort }); m.remove(); done(); } catch (e) { toast(e.message, true); } } }, f.active ? 'إخفاء' : 'إظهار')))))),
+    h('div', { class: 'bar' }, field(newLabel, name), h('button', { class: 'btn small', onclick: async () => { try { await A('POST', endpoint, { name: name.value }); toast('تمت الإضافة'); m.remove(); done(); } catch (e) { toast(e.message, true); } } }, 'إضافة'))));
 }
-function productForm(p, facs, done) {
+function productForm(p, facs, cats, done) {
   if (!facs.length) return toast('أضف مصنعًا أولًا من «إدارة المصانع»', true);
   const v = p || { unit: 'bag', bag_weight_kg: 50, min_order: 1, discount_percent: 0, low_stock_at: 20, active: 1, paused: 0, stock: 0 };
   const I = (name, type = 'text', extra = {}) => h('input', { name, type, value: v[name] ?? '', ...extra });
   const fac = h('select', {}, facs.filter((f) => f.active || f.id === v.factory_id).map((f) => h('option', { value: f.id }, f.name))); fac.value = v.factory_id || facs[0].id;
-  const unit = h('select', {}, h('option', { value: 'bag' }, 'كيس (أسمنت معبأ)'), h('option', { value: 'ton' }, 'طن (أسمنت سائب)')); unit.value = v.unit;
+  const unit = h('select', {}, Object.entries(UNITS).map(([k, u]) => h('option', { value: k }, u.name + (k === 'bag' ? ' (أسمنت معبأ)' : k === 'ton' ? ' (سائب / حديد)' : '')))); unit.value = v.unit;
+  const cat = h('select', {}, h('option', { value: '' }, 'بدون تصنيف'), cats.filter((c) => c.active || c.id === v.category_id).map((c) => h('option', { value: c.id }, c.name))); cat.value = v.category_id || '';
   const f = { name: I('name'), cement_type: I('cement_type'), spec: h('textarea', {}, v.spec || ''), bag_weight_kg: I('bag_weight_kg', 'number', { step: 'any' }), retail_price: I('retail_price', 'number'), discount_percent: I('discount_percent', 'number', { step: 'any' }), offer_note: I('offer_note'), min_order: I('min_order', 'number', { step: 'any' }), wholesale_min: I('wholesale_min', 'number', { step: 'any' }), wholesale_hint: I('wholesale_hint', 'number'), low_stock_at: I('low_stock_at', 'number', { step: 'any' }), stock: I('stock', 'number', { step: 'any' }) };
   const active = h('input', { type: 'checkbox', checked: !!v.active }), paused = h('input', { type: 'checkbox', checked: !!v.paused });
   let image = v.image || null;
@@ -220,11 +221,11 @@ function productForm(p, facs, done) {
   });
   const m = modal(p ? 'تعديل منتج' : 'منتج جديد', h('form', { novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
-    const body = { factory_id: Number(fac.value), unit: unit.value, image, active: active.checked, paused: paused.checked };
+    const body = { factory_id: Number(fac.value), category_id: cat.value ? Number(cat.value) : null, unit: unit.value, image, active: active.checked, paused: paused.checked };
     for (const [k, el] of Object.entries(f)) if (!(k === 'stock' && p)) body[k] = el.value;
     try { await A(p ? 'PUT' : 'POST', '/api/admin/products' + (p ? '/' + p.id : ''), body); toast('تم الحفظ'); m.remove(); done(); } catch (er) { toast(er.message, true); }
-  } }, field('المصنع / العلامة', fac), field('اسم المنتج', f.name), h('div', { class: 'two' }, field('النوع', f.cement_type), field('وحدة البيع', unit)),
-    field('وزن الكيس (كجم)', f.bag_weight_kg, 'للأسمنت المعبأ فقط'), field('المواصفات', f.spec),
+  } }, field('المصنع / العلامة التجارية', fac), field('التصنيف', cat), field('اسم المنتج', f.name), h('div', { class: 'two' }, field('النوع / الدرجة', f.cement_type), field('وحدة البيع', unit)),
+    field('وزن الكيس (كجم)', f.bag_weight_kg, 'اختياري، لوحدة «كيس» فقط'), field('المواصفات', f.spec),
     h('div', { class: 'two' }, field('سعر التجزئة (ريال لكل وحدة)', f.retail_price), field('خصم %', f.discount_percent)), field('نص العرض (يظهر للعميل)', f.offer_note),
     h('div', { class: 'two' }, field('الحد الأدنى للطلب', f.min_order), field('حد الجملة الأدنى (اختياري)', f.wholesale_min)),
     field('سعر الجملة المرجعي (داخلي، لا يظهر للعملاء)', f.wholesale_hint), h('div', { class: 'two' }, field('تنبيه انخفاض المخزون عند', f.low_stock_at), p ? null : field('المخزون الافتتاحي', f.stock)),
@@ -355,7 +356,7 @@ function route() {
   return viewDash();
 }
 async function boot() {
-  try { me = await A('GET', '/api/admin/me'); labels = me.statusLabels; }
+  try { me = await A('GET', '/api/admin/me'); labels = me.statusLabels; setUnits(me.units); }
   catch (e) { me = null; return viewLogin(e.status === 401 ? '' : e.message); }
   lastNew = null; route(); poll(); clearInterval(pollTimer); pollTimer = setInterval(poll, 20000);
 }

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { tx, getSettings } from './db.js';
+import { unitWord, unitIsInt, defaultWholesaleMin } from './units.js';
 
 export class HttpError extends Error {
   constructor(status, message, extra) { super(message); this.status = status; this.extra = extra; }
@@ -57,15 +58,15 @@ export function priceCart(db, rawItems, { wholesale = false } = {}) {
       continue;
     }
     const label = `${p.factory_name} - ${p.name}`;
-    const unitWord = p.unit === 'bag' ? 'كيس' : 'طن';
+    const uw = unitWord(p.unit);
     const available = r3(p.stock - p.reserved);
-    if (p.unit === 'bag' && !Number.isInteger(qty)) problems.push({ productId: id, message: `كمية «${label}» يجب أن تكون عددًا صحيحًا من الأكياس` });
+    if (unitIsInt(p.unit) && !Number.isInteger(qty)) problems.push({ productId: id, message: `كمية «${label}» يجب أن تكون عددًا صحيحًا (${uw})` });
     if (wholesale) {
-      const min = p.wholesale_min ?? Number(p.unit === 'bag' ? settings.wholesale_min_bags : settings.wholesale_min_tons);
-      if (qty < min) problems.push({ productId: id, message: `الحد الأدنى لطلب الجملة من «${label}» هو ${min} ${unitWord}` });
+      const min = p.wholesale_min ?? defaultWholesaleMin(settings, p.unit);
+      if (qty < min) problems.push({ productId: id, message: `الحد الأدنى لطلب الجملة من «${label}» هو ${min} ${uw}` });
     } else {
-      if (qty < p.min_order) problems.push({ productId: id, message: `الحد الأدنى للطلب من «${label}» هو ${p.min_order} ${unitWord}` });
-      if (qty > available) problems.push({ productId: id, message: `المتاح من «${label}» هو ${available} ${unitWord} فقط` });
+      if (qty < p.min_order) problems.push({ productId: id, message: `الحد الأدنى للطلب من «${label}» هو ${p.min_order} ${uw}` });
+      if (qty > available) problems.push({ productId: id, message: `المتاح من «${label}» هو ${available} ${uw} فقط` });
     }
     const unit_price = effectivePrice(p);
     lines.push({
@@ -448,7 +449,7 @@ export function stockOp(db, productId, op, b, actor) {
     else if (op === 'adjust') { newStock = r3(p.stock + q); kind = 'adjust'; }
     else if (op === 'count') { if (q < 0) throw new HttpError(400, 'الكمية غير صحيحة'); newStock = r3(q); kind = 'adjust'; }
     else throw new HttpError(400, 'عملية غير معروفة');
-    if (p.unit === 'bag' && !Number.isInteger(newStock)) throw new HttpError(400, 'أكياس الأسمنت يجب أن تكون أعدادًا صحيحة');
+    if (unitIsInt(p.unit) && !Number.isInteger(newStock)) throw new HttpError(400, `الكمية بوحدة «${unitWord(p.unit)}» يجب أن تكون عددًا صحيحًا`);
     if (newStock < p.reserved - 1e-9) throw new HttpError(409, `لا يمكن أن يقل المخزون عن الكمية المحجوزة (${p.reserved})`);
     delta = r3(newStock - p.stock);
     db.prepare('UPDATE products SET stock=?, updated_at=? WHERE id=?').run(newStock, now(), productId);

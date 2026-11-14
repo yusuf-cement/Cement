@@ -76,7 +76,8 @@ const bad = /ReferenceError|TypeError|undefined|NaN|\[object/;
 test('الإدارة: شاشة الدخول وكل الشاشات تُعرض بلا أخطاء', async () => {
   await J('POST', '/api/admin/login', { username: 'boss', password: 'boss-pass-123' });
   const f = await J('POST', '/api/admin/factories', { name: 'مصنع اختبار' });
-  const p = await J('POST', '/api/admin/products', { factory_id: f.id, name: 'أسمنت اختبار', unit: 'bag', bag_weight_kg: 50, retail_price: 7000, stock: 300, wholesale_min: 100 });
+  const cg = await J('POST', '/api/admin/categories', { name: 'تصنيف اختبار' });
+  const p = await J('POST', '/api/admin/products', { factory_id: f.id, category_id: cg.id, name: 'أسمنت اختبار', unit: 'bag', bag_weight_kg: 50, retail_price: 7000, stock: 300, wholesale_min: 100 });
   await J('POST', '/api/orders', { name: 'عميل', phone: '771111111', region: 'مأرب', address: 'حي الجامعة', fulfillment: 'delivery', idempotencyKey: 'smoke-key-0001', items: [{ productId: p.id, qty: 10 }] });
   await import(pathToFileURL(path.join(work, 'admin/admin.js')).href);
   await tick(400);
@@ -104,6 +105,7 @@ test('المتجر: الرئيسية والمنتج والسلة والدفع و
     assert.match(t, re, hash + ': ' + t.slice(0, 200));
   };
   await check('#/', /أسمنت اختبار/);
+  assert.match(elements.app.text(), /تصنيف اختبار/);
   await check('#/p/1', /7,000/);
   mem.cw_cart = JSON.stringify([{ id: 1, qty: 20, seen: 7000 }]);
   await check('#/cart', /140,000/);

@@ -1,4 +1,5 @@
 import { HttpError } from './orders.js';
+import { unitWord } from './units.js';
 
 const DONE = "('delivered','completed_paid')";
 const OPEN = "('confirmed','preparing','ready_pickup','out_for_delivery','delivered')";
@@ -82,9 +83,9 @@ export function csvExport(db, kind, q) {
       ...rows.map((r) => [r.invoice_no, r.number, r.delivered_at, r.name, r.phone, r.total, r.paid, r.total - r.paid])]);
   }
   if (kind === 'products') {
-    const rows = db.prepare(`SELECT f.name factory, p.name, p.unit, p.retail_price, p.stock, p.reserved FROM products p JOIN factories f ON f.id=p.factory_id ORDER BY f.name,p.name`).all();
-    return toCsv([['المصنع', 'المنتج', 'الوحدة', 'سعر التجزئة', 'المخزون', 'المحجوز', 'المتاح'],
-      ...rows.map((r) => [r.factory, r.name, r.unit === 'bag' ? 'كيس' : 'طن', r.retail_price, r.stock, r.reserved, Math.round((r.stock - r.reserved) * 1000) / 1000])]);
+    const rows = db.prepare(`SELECT f.name factory, c.name category, p.name, p.unit, p.retail_price, p.stock, p.reserved FROM products p JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id ORDER BY f.name,p.name`).all();
+    return toCsv([['المصنع', 'التصنيف', 'المنتج', 'الوحدة', 'سعر التجزئة', 'المخزون', 'المحجوز', 'المتاح'],
+      ...rows.map((r) => [r.factory, r.category, r.name, unitWord(r.unit), r.retail_price, r.stock, r.reserved, Math.round((r.stock - r.reserved) * 1000) / 1000])]);
   }
   if (kind === 'customers') {
     const rows = db.prepare(`SELECT c.name,c.phone,c.wholesale_approved,COUNT(o.id) orders,COALESCE(SUM(CASE WHEN o.status IN ${DONE} THEN o.total END),0) total

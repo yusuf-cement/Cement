@@ -27,7 +27,11 @@ export function h(tag, attrs, ...kids) {
 }
 export const fmt = (n) => (n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US'));
 export const money = (n) => (n === null || n === undefined ? '—' : fmt(n) + ' ريال');
-export const unitName = (u) => (u === 'bag' ? 'كيس' : 'طن');
+// وحدات البيع (تُحدَّث من الخادم عند تحميل الكتالوج)
+export let UNITS = { bag: { name: 'كيس', int: true }, ton: { name: 'طن', int: false } };
+export const setUnits = (u) => { if (u) UNITS = u; };
+export const unitName = (u) => UNITS[u]?.name || u;
+export const unitInt = (u) => !!UNITS[u]?.int;
 export const qtyText = (q, u) => `${fmt(q)} ${unitName(u)}`;
 export const dt = (iso) => {
   if (!iso) return '';

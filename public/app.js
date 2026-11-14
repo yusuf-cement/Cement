@@ -1,8 +1,8 @@
-import { h, fmt, money, unitName, qtyText, dt, waLink, api, toast, bagSvg, field } from '/common.js';
+import { h, fmt, money, unitName, unitInt, setUnits, qtyText, dt, waLink, api, toast, bagSvg, field } from '/common.js';
 
 const app = document.getElementById('app');
 let cat = null;               // الكتالوج الحالي (من الخادم)
-let q = '', facId = 0, offersOnly = false;
+let q = '', facId = 0, catId = 0, offersOnly = false;
 let installEvt = null;
 let pollTimer = null;
 
@@ -26,6 +26,8 @@ async function loadCatalog(force) {
   if (cat && !force && Date.now() - cat._t < 60000) return cat;
   try { cat = await api('GET', '/api/catalog'); cat._t = Date.now(); }
   catch (e) { if (!cat) throw e; toast('تعذّر تحديث الأسعار، تُعرض آخر نسخة محفوظة', true); }
+  setUnits(cat.units);
+  if (cat.store?.store_name) document.title = cat.store.store_name + ' - ' + (cat.store.city || '');
   return cat;
 }
 const prod = (id) => cat?.products.find((p) => p.id === Number(id));
@@ -40,13 +42,13 @@ function shell(content, active) {
   search.addEventListener('input', () => { q = search.value; if (location.hash && location.hash !== '#/' && location.hash !== '#') location.hash = '#/'; else renderGrid(); });
   return [
     h('header', { class: 'top' }, h('div', { class: 'wrap' },
-      h('a', { class: 'brand', href: '#/' }, h('img', { src: '/icons/icon-192.png', alt: '' }), h('span', {}, s.store_name || 'عالم الأسمنت')),
+      h('a', { class: 'brand', href: '#/' }, h('img', { src: '/icons/icon-192.png', alt: '' }), h('span', {}, s.store_name || 'عالم الأسمنت ومواد البناء')),
       h('div', { class: 'search' }, search),
       h('a', { class: 'iconbtn', href: '#/cart', 'aria-label': 'السلة' }, 'السلة', h('span', { class: 'n', id: 'cartn' }, cartCount())))),
     h('nav', { class: 'sub' }, h('div', { class: 'wrap' }, tabs.map(([href, t, k]) => h('a', { href, class: active === k ? 'on' : '' }, t)))),
     content,
     h('footer', { class: 'foot' }, h('div', { class: 'wrap' },
-      h('div', {}, `${s.store_name || 'عالم الأسمنت'} — ${s.city || ''}`),
+      h('div', {}, `${s.store_name || 'عالم الأسمنت ومواد البناء'} — ${s.city || ''}`),
       h('div', {}, 'اتصال وواتساب: ', h('a', { href: 'tel:' + (s.phone || ''), dir: 'ltr' }, s.phone || '')),
       installEvt ? h('p', {}, h('button', { class: 'btn small alt', style: 'color:#fff;border-color:#fff8', onclick: async () => { installEvt.prompt(); await installEvt.userChoice; installEvt = null; route(); } }, 'تثبيت المتجر كتطبيق على هاتفك')) : h('p', {}, 'لتثبيته كتطبيق: من قائمة المتصفح اختر «إضافة إلى الشاشة الرئيسية».'))),
     s.whatsapp ? h('a', { class: 'btn wa fab', href: waLink(s.whatsapp, 'السلام عليكم، أريد الاستفسار عن الأسمنت'), target: '_blank', rel: 'noopener' }, 'واتساب') : null,
@@ -61,10 +63,10 @@ const errorView = (e) => h('div', { class: 'wrap' }, h('div', { class: 'panel em
 
 /* ---------- عنصر الكمية ---------- */
 function qtyControl(p, start) {
-  const step = p.unit === 'bag' ? 1 : 0.5;
+  const step = unitInt(p.unit) ? 1 : 0.5;
   const min = p.min_order || 1;
   const input = h('input', { type: 'number', inputmode: 'decimal', min, step, value: start ?? min, 'aria-label': 'الكمية' });
-  const clamp = () => { let v = Number(input.value); if (!isFinite(v) || v < min) v = min; if (p.unit === 'bag') v = Math.round(v); input.value = v; return v; };
+  const clamp = () => { let v = Number(input.value); if (!isFinite(v) || v < min) v = min; if (unitInt(p.unit)) v = Math.round(v); input.value = v; return v; };
   input.addEventListener('change', clamp);
   const el = h('div', { class: 'qty' },
     h('button', { type: 'button', 'aria-label': 'زيادة', onclick: () => { input.value = Number(input.value || 0) + step; clamp(); input.dispatchEvent(new Event('qty')); } }, '+'),
@@ -78,6 +80,7 @@ function priceBlock(p) {
   return h('div', { class: 'price' }, money(p.price), h('small', {}, ' / ' + unitName(p.unit)),
     p.discount_percent > 0 ? h('s', {}, fmt(p.retail_price)) : null);
 }
+const unitLine = (p) => (p.unit === 'bag' && p.bag_weight_kg ? `كيس ${p.bag_weight_kg} كجم` : p.unit === 'ton' ? 'سائب بالطن' : `البيع بال${unitName(p.unit)}`);
 function productCard(p) {
   const [avTxt, avCls] = AV[p.availability];
   const qc = qtyControl(p);
@@ -87,7 +90,7 @@ function productCard(p) {
     h('div', { class: 'body' },
       h('div', { class: 'fac' }, p.factory_name),
       h('h3', {}, h('a', { href: '#/p/' + p.id }, p.name)),
-      h('div', { class: 'spec' }, [p.cement_type, p.unit === 'bag' && p.bag_weight_kg ? `كيس ${p.bag_weight_kg} كجم` : p.unit === 'ton' ? 'سائب بالطن' : null].filter(Boolean).join(' • ')),
+      h('div', { class: 'spec' }, [p.category_name, p.cement_type, unitLine(p)].filter(Boolean).join(' • ')),
       priceBlock(p),
       p.offer_note ? h('div', { class: 'spec' }, p.offer_note) : null,
       h('div', {}, h('span', { class: 'badge ' + avCls }, avTxt), canBuy(p) ? h('span', { class: 'spec' }, ` المتوفر: ${qtyText(p.available, p.unit)}`) : null),
@@ -99,28 +102,34 @@ let gridBox;
 function renderGrid() {
   if (!gridBox || !cat) return;
   const t = q.trim().toLowerCase();
-  const list = cat.products.filter((p) => (!facId || p.factory_id === facId) && (!offersOnly || p.discount_percent > 0)
-    && (!t || `${p.name} ${p.factory_name} ${p.cement_type || ''} ${p.spec || ''}`.toLowerCase().includes(t)));
+  const list = cat.products.filter((p) => (!facId || p.factory_id === facId) && (!catId || p.category_id === catId) && (!offersOnly || p.discount_percent > 0)
+    && (!t || `${p.name} ${p.factory_name} ${p.category_name || ''} ${p.cement_type || ''} ${p.spec || ''}`.toLowerCase().includes(t)));
   gridBox.replaceChildren(...(list.length ? list.map(productCard) : [h('div', { class: 'empty', style: 'grid-column:1/-1' }, cat.products.length ? 'لا توجد منتجات مطابقة لبحثك.' : 'لم تتم إضافة منتجات بعد. تواصل معنا عبر واتساب للاستفسار.')]));
 }
 async function viewHome() {
   await loadCatalog();
-  const chips = h('div', { class: 'chips', role: 'tablist' });
-  const drawChips = () => chips.replaceChildren(
-    h('button', { class: 'chip' + (!facId && !offersOnly ? ' on' : ''), onclick: () => { facId = 0; offersOnly = false; drawChips(); renderGrid(); } }, 'الكل'),
-    cat.products.some((p) => p.discount_percent > 0) ? h('button', { class: 'chip' + (offersOnly ? ' on' : ''), onclick: () => { offersOnly = !offersOnly; drawChips(); renderGrid(); } }, 'العروض') : null,
-    ...cat.factories.map((f) => h('button', { class: 'chip' + (facId === f.id ? ' on' : ''), onclick: () => { facId = facId === f.id ? 0 : f.id; drawChips(); renderGrid(); } }, f.name)));
+  const chips = h('div', { class: 'chips' }), catChips = h('div', { class: 'chips' });
+  const drawChips = () => {
+    const usedCats = new Set(cat.products.map((p) => p.category_id));
+    catChips.replaceChildren(cat.categories.filter((c) => usedCats.has(c.id)).length ? [
+      h('button', { class: 'chip' + (!catId ? ' on' : ''), onclick: () => { catId = 0; drawChips(); renderGrid(); } }, 'كل التصنيفات'),
+      ...cat.categories.filter((c) => usedCats.has(c.id)).map((c) => h('button', { class: 'chip' + (catId === c.id ? ' on' : ''), onclick: () => { catId = catId === c.id ? 0 : c.id; drawChips(); renderGrid(); } }, c.name))] : null);
+    chips.replaceChildren(
+      h('button', { class: 'chip' + (!facId && !offersOnly ? ' on' : ''), onclick: () => { facId = 0; offersOnly = false; drawChips(); renderGrid(); } }, 'كل المصانع والعلامات'),
+      cat.products.some((p) => p.discount_percent > 0) ? h('button', { class: 'chip' + (offersOnly ? ' on' : ''), onclick: () => { offersOnly = !offersOnly; drawChips(); renderGrid(); } }, 'العروض') : null,
+      ...cat.factories.map((f) => h('button', { class: 'chip' + (facId === f.id ? ' on' : ''), onclick: () => { facId = facId === f.id ? 0 : f.id; drawChips(); renderGrid(); } }, f.name)));
+  };
   drawChips();
   gridBox = h('div', { class: 'grid' });
   const s = cat.store;
   const stack = h('div', { class: 'stack', 'aria-hidden': 'true', html: '<svg viewBox="0 0 260 190" xmlns="http://www.w3.org/2000/svg"><g stroke="#123221" stroke-width="3"><rect x="14" y="120" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="126" y="120" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="70" y="66" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="14" y="140" width="104" height="16" fill="#2c6a49"/><rect x="126" y="140" width="104" height="16" fill="#2c6a49"/><rect x="70" y="86" width="104" height="16" fill="#2c6a49"/></g></svg>' });
   mount([
     h('section', { class: 'hero' }, h('div', { class: 'wrap' },
-      h('div', {}, h('h1', {}, 'أسمنت بالجملة والتجزئة في مأرب'),
-        h('p', {}, 'اختر الكمية بالأكياس أو بالطن، واستلم من مستودعنا أو نوصّله إليك. أسعار التجزئة أمامك، وأسعار الجملة نرسلها لك بعرض خاص.'),
+      h('div', {}, h('h1', {}, 'الأسمنت ومواد البناء في مأرب'),
+        h('p', {}, 'الأسمنت ومواد البناء بالجملة والتجزئة. اختر الكمية، واستلم من مستودعنا أو نوصّله إليك. أسعار التجزئة أمامك، وأسعار الجملة نرسلها لك بعرض خاص.'),
         h('div', { class: 'btns' }, h('a', { class: 'btn', href: '#products' , onclick: (e) => { e.preventDefault(); document.getElementById('products').scrollIntoView({ behavior: 'smooth' }); } }, 'تصفح المنتجات'), h('a', { class: 'btn alt', href: '#/wholesale' }, 'اطلب بالجملة'), s.whatsapp ? h('a', { class: 'btn alt', href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'واتساب') : null)),
       stack)),
-    h('div', { class: 'wrap', id: 'products' }, chips, gridBox),
+    h('div', { class: 'wrap', id: 'products' }, catChips, chips, gridBox),
   ], 'home');
   renderGrid();
   if (!cat.products.length) return;
@@ -137,7 +146,7 @@ async function viewProduct(id) {
     h('div', { class: 'fac' }, p.factory_name), h('h2', { style: 'font-size:24px' }, p.name),
     priceBlock(p), p.offer_note ? h('div', { class: 'notice' }, p.offer_note) : null,
     h('div', { class: 'row' }, h('span', {}, 'النوع'), h('span', {}, p.cement_type || '—')),
-    h('div', { class: 'row' }, h('span', {}, 'وحدة البيع'), h('span', {}, p.unit === 'bag' ? `كيس ${p.bag_weight_kg || ''} كجم` : 'طن (سائب)')),
+    h('div', { class: 'row' }, h('span', {}, 'وحدة البيع'), h('span', {}, unitLine(p))),
     p.spec ? h('div', { class: 'row' }, h('span', {}, 'المواصفات'), h('span', {}, p.spec)) : null,
     h('div', { class: 'row' }, h('span', {}, 'الحد الأدنى للطلب'), h('span', {}, qtyText(p.min_order, p.unit))),
     h('div', { class: 'row' }, h('span', {}, 'التوفر'), h('span', {}, h('span', { class: 'badge ' + avCls }, avTxt), canBuy(p) ? ` ${qtyText(p.available, p.unit)}` : '')),
@@ -363,7 +372,7 @@ async function viewContact() {
   await loadCatalog();
   const s = cat.store;
   mount(h('div', { class: 'wrap' }, h('h2', { class: 'sec' }, 'عن المتجر وطرق التواصل'),
-    h('div', { class: 'panel' }, h('h2', {}, s.store_name), h('p', {}, 'بيع الأسمنت بالجملة والتجزئة، أكياسًا وسائبًا بالطن، مع الاستلام من المستودع أو التوصيل.'),
+    h('div', { class: 'panel' }, h('h2', {}, s.store_name), h('p', {}, 'بيع الأسمنت ومواد البناء بالجملة والتجزئة، مع الاستلام من المستودع أو التوصيل.'),
       h('div', { class: 'row' }, h('span', {}, 'الموقع'), h('span', {}, s.city)),
       h('div', { class: 'row' }, h('span', {}, 'المستودع'), h('span', {}, s.warehouse_address)),
       h('div', { class: 'row' }, h('span', {}, 'ساعات العمل'), h('span', {}, s.warehouse_hours)),
