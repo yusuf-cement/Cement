@@ -8,3 +8,6 @@ backups/
 *.db
 *.zip
 *.migration-dump.json
+*.db
+*.zip
+*.migration-dump.json
