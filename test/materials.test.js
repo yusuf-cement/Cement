@@ -10,13 +10,13 @@ const { openDb, getSettings } = await import('../server/db.js');
 const { createApp, createUser } = await import('../server/app.js');
 let server, base, db, owner, staff;
 before(async () => {
-  db = openDb(path.join(tmp, 't.db'));
-  createUser(db, 'owner1', 'owner-pass-123', 'owner'); createUser(db, 'staff1', 'staff-pass-123', 'staff');
+  db = await openDb(process.env.TEST_DATABASE_URL || 'postgres://cement:cement@localhost:5432/cement_test?sslmode=disable', { schema: 't_mat_' + process.pid });
+  await createUser(db, 'owner1', 'owner-pass-123', 'owner'); await createUser(db, 'staff1', 'staff-pass-123', 'staff');
   server = createApp(db);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => { server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(async () => { server.close(); await db.dropSchema(); await db.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 const call = async (m, u, b, c) => {
   const r = await fetch(base + u, { method: m, headers: { 'Content-Type': 'application/json', ...(c ? { Cookie: c, 'X-Requested-With': 'cement' } : {}) }, body: b && JSON.stringify(b) });
   return { status: r.status, json: await r.json().catch(() => null), headers: r.headers };
@@ -24,7 +24,7 @@ const call = async (m, u, b, c) => {
 const login = async (u, p) => (await call('POST', '/api/admin/login', { username: u, password: p }, 'x=1')).headers.get('set-cookie').split(';')[0];
 
 test('الاسم الافتراضي والتصنيفات والوحدات', async () => {
-  assert.equal(getSettings(db).store_name, 'عالم الأسمنت ومواد البناء');
+  assert.equal((await getSettings(db)).store_name, 'عالم الأسمنت ومواد البناء');
   owner = await login('owner1', 'owner-pass-123'); staff = await login('staff1', 'staff-pass-123');
   const f = (await call('POST', '/api/admin/factories', { name: 'علامة' }, owner)).json.id;
   assert.equal((await call('POST', '/api/admin/categories', { name: 'بلك وطوب' }, staff)).status, 403);

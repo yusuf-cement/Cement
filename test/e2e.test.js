@@ -12,14 +12,14 @@ const { createApp, createUser } = await import('../server/app.js');
 
 let server, base, db;
 before(async () => {
-  db = openDb(path.join(tmp, 'test.db'));
-  createUser(db, 'owner1', 'owner-pass-123', 'owner');
-  createUser(db, 'staff1', 'staff-pass-123', 'staff');
+  db = await openDb(process.env.TEST_DATABASE_URL || 'postgres://cement:cement@localhost:5432/cement_test?sslmode=disable', { schema: 't_e2e_' + process.pid });
+  await createUser(db, 'owner1', 'owner-pass-123', 'owner');
+  await createUser(db, 'staff1', 'staff-pass-123', 'staff');
   server = createApp(db);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(() => { server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(async () => { server.close(); await db.dropSchema(); await db.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
 async function call(method, url, body, cookie, extra = {}) {
   const headers = { 'Content-Type': 'application/json', ...extra };
@@ -47,7 +47,7 @@ async function newProduct(over = {}) {
   assert.equal(r.status, 201, JSON.stringify(r.json));
   return r.json.id;
 }
-const productStock = (id) => db.prepare('SELECT stock,reserved FROM products WHERE id=?').get(id);
+const productStock = async (id) => (await db.get('SELECT stock,reserved FROM products WHERE id=?', id));
 
 test('الإعداد: دخول المدير وإضافة مصنع', async () => {
   owner = await login('owner1', 'owner-pass-123');
@@ -80,7 +80,7 @@ test('السيناريو الكامل: من إضافة المنتج حتى ال�
   assert.equal(list.json[0].items_total, 700000, 'السعر يُحسب على الخادم');
   assert.equal(list.json[0].status, 'new');
   // المخزون لم يُحجز بعد
-  assert.deepEqual({ ...productStock(pid) }, { stock: 500, reserved: 0 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 500, reserved: 0 });
   // العميل لا يرى إجماليًا نهائيًا قبل تحديد أجرة النقل
   let t = await call('GET', '/api/track/' + token);
   assert.equal(t.json.total, null);
@@ -106,7 +106,7 @@ test('السيناريو الكامل: من إضافة المنتج حتى ال�
   // 10-11: موافقة العميل → حجز الكمية
   const ap = await call('POST', `/api/track/${token}/approve`, {});
   assert.equal(ap.json.status, 'confirmed');
-  assert.deepEqual({ ...productStock(pid) }, { stock: 500, reserved: 100 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 500, reserved: 100 });
   // 12: تجهيز وخروج للتوصيل
   await call('POST', `/api/admin/orders/${id}/prepare`, {}, staff);
   await call('POST', `/api/admin/orders/${id}/dispatch`, { driver_name: 'سائق', driver_phone: '770000000' }, staff);
@@ -119,7 +119,7 @@ test('السيناريو الكامل: من إضافة المنتج حتى ال�
   const dl = await call('POST', `/api/admin/orders/${id}/deliver`, {}, owner);
   assert.equal(dl.json.status, 'delivered');
   assert.match(dl.json.invoice_no, /^INV-\d{6}$/);
-  assert.deepEqual({ ...productStock(pid) }, { stock: 400, reserved: 0 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 400, reserved: 0 });
   assert.equal(dl.json.payment_status, 'unpaid', 'التسليم لا يعني الدفع');
   assert.equal((await call('POST', `/api/admin/orders/${id}/payment`, { amount: 800000 }, owner)).status, 400, 'أكبر من المتبقي');
   let pay = await call('POST', `/api/admin/orders/${id}/payment`, { amount: 250000 }, owner);
@@ -143,7 +143,7 @@ test('السيناريو الكامل: من إضافة المنتج حتى ال�
   const full = await call('GET', `/api/admin/orders/${id}`, undefined, owner);
   assert.ok(full.json.events.some((e) => e.actor === 'staff1' && e.status === 'preparing'));
   assert.ok(full.json.events.some((e) => e.actor === 'العميل' || e.actor === 'owner1'));
-  const movements = db.prepare('SELECT kind FROM stock_movements WHERE order_id=?').all(id).map((m) => m.kind);
+  const movements = (await db.all('SELECT kind FROM stock_movements WHERE order_id=?', id)).map((m) => m.kind);
   assert.deepEqual(movements, ['reserve', 'issue']);
 });
 
@@ -163,7 +163,7 @@ test('الجملة: طلب تسعير، سعر خاص، رفض العرض وقب
   // لا تأكيد ولا حجز قبل التسعير
   assert.equal((await call('POST', `/api/admin/orders/${id}/send_quote`, {}, owner)).status, 400);
   assert.equal((await call('POST', `/api/track/${w.json.token}/approve`, {})).status, 409);
-  assert.deepEqual({ ...productStock(pid) }, { stock: 2000, reserved: 0 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 2000, reserved: 0 });
   // تسعير خاص دون المساس بسعر التجزئة العام
   const det = await call('GET', `/api/admin/orders/${id}`, undefined, owner);
   const itemId = det.json.items[0].id;
@@ -174,7 +174,7 @@ test('الجملة: طلب تسعير، سعر خاص، رفض العرض وقب
   // العميل يرفض → إلغاء بلا أي أثر على المخزون
   const rj = await call('POST', `/api/track/${w.json.token}/reject`, { reason: 'السعر مرتفع' });
   assert.equal(rj.json.status, 'cancelled');
-  assert.deepEqual({ ...productStock(pid) }, { stock: 2000, reserved: 0 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 2000, reserved: 0 });
   // طلب ثانٍ: تعديل السعر بعد إرسال العرض يعيد الطلب للمراجعة مع إيضاح للعميل
   const w2 = await call('POST', '/api/wholesale-requests', { ...customer({ fulfillment: 'pickup' }), items: [{ productId: pid, qty: 500 }] });
   const id2 = (await call('GET', '/api/admin/orders?q=' + w2.json.number, undefined, owner)).json[0].id;
@@ -187,7 +187,7 @@ test('الجملة: طلب تسعير، سعر خاص، رفض العرض وقب
   await call('POST', `/api/admin/orders/${id2}/send_quote`, {}, owner);
   const ok = await call('POST', `/api/track/${w2.json.token}/approve`, {});
   assert.equal(ok.json.status, 'confirmed');
-  assert.deepEqual({ ...productStock(pid) }, { stock: 2000, reserved: 500 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 2000, reserved: 500 });
   // استلام من المستودع بلا أجرة نقل
   assert.equal(ok.json.delivery_fee, null);
   assert.equal(ok.json.total, 3150000);
@@ -200,12 +200,12 @@ test('الإلغاء يعيد الكمية المحجوزة، واسترجاع �
   const id = (await call('GET', '/api/admin/orders?q=' + s.json.number, undefined, owner)).json[0].id;
   const c = await call('POST', `/api/admin/orders/${id}/confirm`, {}, owner);
   assert.equal(c.json.status, 'confirmed');
-  assert.equal(productStock(pid).reserved, 60);
+  assert.equal((await productStock(pid)).reserved, 60);
   await call('POST', `/api/admin/orders/${id}/payment`, { amount: 100000, method: 'cash' }, owner);
   assert.equal((await call('POST', `/api/admin/orders/${id}/cancel`, { reason: 'x' }, owner)).status, 409, 'يلزم تأكيد الاسترجاع');
   const cx = await call('POST', `/api/admin/orders/${id}/cancel`, { reason: 'طلب العميل', refund: true }, owner);
   assert.equal(cx.json.status, 'cancelled');
-  assert.deepEqual({ ...productStock(pid) }, { stock: 100, reserved: 0 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 100, reserved: 0 });
   assert.equal(cx.json.paid, 0);
   assert.equal((await call('POST', `/api/admin/orders/${id}/prepare`, {}, owner)).status, 409);
 });
@@ -223,7 +223,7 @@ test('نفاد المخزون ومنع تجاوز الكمية المتاحة', 
   assert.equal((await call('POST', `/api/admin/orders/${ids[0]}/confirm`, {}, owner)).status, 200);
   const second = await call('POST', `/api/admin/orders/${ids[1]}/confirm`, {}, owner);
   assert.equal(second.status, 409);
-  assert.deepEqual({ ...productStock(pid) }, { stock: 50, reserved: 40 });
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 50, reserved: 40 });
   // إيقاف البيع المؤقت وإخفاء المنتج
   await call('PUT', `/api/admin/products/${pid}`, { factory_id: factoryId, name: 'م', unit: 'bag', bag_weight_kg: 50, retail_price: 7000, paused: true }, owner);
   const p = (await call('GET', '/api/catalog')).json.products.find((x) => x.id === pid);
@@ -247,7 +247,7 @@ test('منع تكرار الطلب عند الضغط المتكرر', async () =
   const body = { ...customer(), items: [{ productId: pid, qty: 5 }] };
   const results = await Promise.all([1, 2, 3, 4].map(() => call('POST', '/api/orders', body)));
   assert.equal(new Set(results.map((r) => r.json.number)).size, 1);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM orders WHERE idem_key=?').get(body.idempotencyKey).n, 1);
+  assert.equal((await db.get('SELECT COUNT(*) n FROM orders WHERE idem_key=?', body.idempotencyKey)).n, 1);
 });
 
 test('طلبان متزامنان لنفس الكمية: ينجح أحدهما فقط', async () => {
@@ -258,7 +258,7 @@ test('طلبان متزامنان لنفس الكمية: ينجح أحدهما �
   for (const o of [a, b]) ids.push((await call('GET', '/api/admin/orders?q=' + o.json.number, undefined, owner)).json[0].id);
   const res = await Promise.all(ids.map((id) => call('POST', `/api/admin/orders/${id}/confirm`, {}, owner)));
   assert.deepEqual(res.map((r) => r.status).sort(), [200, 409]);
-  assert.equal(productStock(pid).reserved, 80);
+  assert.equal((await productStock(pid)).reserved, 80);
 });
 
 test('تحويل بنكي: يبقى بانتظار التحقق حتى يعتمده المدير', async () => {
@@ -329,8 +329,104 @@ test('الأرشيف والنسخ الاحتياطي', async () => {
   const r = await fetch(base + '/api/admin/backup', { headers: { Cookie: owner } });
   assert.equal(r.status, 200);
   const buf = Buffer.from(await r.arrayBuffer());
-  assert.equal(buf.toString('latin1', 0, 15), 'SQLite format 3');
+  const dump = JSON.parse(buf.toString('utf8'));
+  assert.equal(dump.format, 'cement-backup');
+  assert.ok(dump.tables.orders.length > 0 && dump.tables.products.length > 0 && dump.tables.users.length === 2);
+  assert.ok(!('sessions' in dump.tables), 'الجلسات لا تُنسخ');
   const audit = await call('GET', '/api/admin/audit', undefined, owner);
   assert.ok(audit.json.some((a) => a.action === 'product_create'));
   assert.ok(audit.json.some((a) => a.action === 'login_failed'));
+});
+
+test('الصور تُخزَّن في PostgreSQL وتُخدَّم منها، وتصدير/استيراد النسخة يحفظ كل شيء', async () => {
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(300, 7)]);
+  const up = await call('POST', '/api/admin/upload', { data: 'data:image/png;base64,' + png.toString('base64') }, owner);
+  assert.equal(up.status, 200, JSON.stringify(up.json));
+  assert.match(up.json.path, /^\/uploads\/[a-f0-9]{32}\.png$/);
+  const img = await fetch(base + up.json.path);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/png');
+  assert.match(img.headers.get('cache-control'), /immutable/);
+  assert.ok(Buffer.from(await img.arrayBuffer()).equals(png));
+  assert.equal((await fetch(base + up.json.path, { headers: { 'If-None-Match': img.headers.get('etag') } })).status, 304);
+  assert.equal((await fetch(base + '/uploads/' + 'a'.repeat(32) + '.png')).status, 404);
+  assert.equal((await fetch(base + '/uploads/..%2f..%2fetc%2fpasswd')).status, 404);
+  // غير مالك لا يرفع
+  assert.equal((await call('POST', '/api/admin/upload', { data: png.toString('base64') }, staff)).status, 403);
+
+  const { exportAll, importAll } = await import('../server/backup.js');
+  const before = await exportAll(db);
+  const counts = await importAll(db, JSON.parse(JSON.stringify(before)));
+  assert.equal(counts.uploads, before.tables.uploads.length);
+  const after = await exportAll(db);
+  assert.deepEqual(after.tables, before.tables);
+  assert.equal((await fetch(base + up.json.path)).status, 200);
+  // التسلسل يكمل بعد الاستيراد: إضافة منتج جديد لا تتعارض مع المعرّفات الموجودة
+  owner = await login('owner1', 'owner-pass-123');
+  const pid = await newProduct();
+  assert.ok(pid > Math.max(...before.tables.products.map((p) => p.id)));
+  await assert.rejects(importAll(db, { format: 'x', tables: {} }), /ليس نسخة احتياطية/);
+});
+
+async function orderId(number) { return (await call('GET', '/api/admin/orders?q=' + number, undefined, owner)).json[0].id; }
+
+test('إجهاد: 12 تأكيدًا متزامنًا على مخزون يكفي 5 فقط، بلا بيع زائد ولا أخطاء خادم', async () => {
+  const pid = await newProduct({ stock: 50 });
+  const made = await Promise.all(Array.from({ length: 12 }, () => call('POST', '/api/orders', { ...customer({ fulfillment: 'pickup' }), items: [{ productId: pid, qty: 10 }] })));
+  assert.ok(made.every((m) => m.status === 201), JSON.stringify(made.map((m) => m.status)));
+  const ids = await Promise.all(made.map((m) => orderId(m.json.number)));
+  const res = await Promise.all(ids.map((id) => call('POST', `/api/admin/orders/${id}/confirm`, {}, owner)));
+  const codes = res.map((r) => r.status);
+  assert.equal(codes.filter((c) => c === 200).length, 5, codes.join());
+  assert.equal(codes.filter((c) => c === 409).length, 7, codes.join());
+  const st = await productStock(pid);
+  assert.deepEqual({ ...st }, { stock: 50, reserved: 50 });
+});
+
+test('النقر المزدوج: نفس الإجراء على الطلب نفسه ينفَّذ مرة واحدة فقط', async () => {
+  const pid = await newProduct({ stock: 100 });
+  const o = await call('POST', '/api/orders', { ...customer({ fulfillment: 'pickup' }), items: [{ productId: pid, qty: 30 }] });
+  const id = await orderId(o.json.number);
+  const res = await Promise.all(Array.from({ length: 6 }, () => call('POST', `/api/admin/orders/${id}/confirm`, {}, owner)));
+  const codes = res.map((r) => r.status).sort();
+  assert.equal(codes.filter((c) => c === 200).length, 1, codes.join());
+  assert.ok(codes.every((c) => c === 200 || c === 409), codes.join());
+  assert.equal((await productStock(pid)).reserved, 30);
+  const mv = (await db.all("SELECT kind FROM stock_movements WHERE order_id=? AND kind='reserve'", id));
+  assert.equal(mv.length, 1);
+  // تسليم متزامن مرتين: صرف واحد ورقم فاتورة واحد
+  assert.equal((await call('POST', `/api/admin/orders/${id}/ready`, {}, owner)).status, 200);
+  const del = await Promise.all([1, 2, 3].map(() => call('POST', `/api/admin/orders/${id}/deliver`, {}, owner)));
+  assert.equal(del.filter((r) => r.status === 200).length, 1, del.map((r) => r.status).join());
+  assert.deepEqual({ ...(await productStock(pid)) }, { stock: 70, reserved: 0 });
+});
+
+test('منتجان بترتيب معكوس في طلبات متزامنة: لا توقف متبادل', async () => {
+  const a = await newProduct({ stock: 1000 }), b = await newProduct({ stock: 1000 });
+  const made = await Promise.all(Array.from({ length: 16 }, (_, i) => call('POST', '/api/orders', {
+    ...customer({ fulfillment: 'pickup' }),
+    items: i % 2 ? [{ productId: a, qty: 5 }, { productId: b, qty: 5 }] : [{ productId: b, qty: 5 }, { productId: a, qty: 5 }],
+  })));
+  assert.ok(made.every((m) => m.status === 201));
+  const ids = await Promise.all(made.map((m) => orderId(m.json.number)));
+  const res = await Promise.all(ids.map((id) => call('POST', `/api/admin/orders/${id}/confirm`, {}, owner)));
+  assert.ok(res.every((r) => r.status === 200), res.map((r) => r.status).join());
+  assert.deepEqual({ ...(await productStock(a)) }, { stock: 1000, reserved: 80 });
+  assert.deepEqual({ ...(await productStock(b)) }, { stock: 1000, reserved: 80 });
+});
+
+test('التقارير بتوقيت اليمن: تسليم 22:30 بتوقيت UTC يُحسب لليوم التالي', async () => {
+  const pid = await newProduct({ stock: 100 });
+  const o = await call('POST', '/api/orders', { ...customer({ fulfillment: 'pickup' }), items: [{ productId: pid, qty: 1 }] });
+  const id = await orderId(o.json.number);
+  await call('POST', `/api/admin/orders/${id}/confirm`, {}, owner);
+  await call('POST', `/api/admin/orders/${id}/ready`, {}, owner);
+  assert.equal((await call('POST', `/api/admin/orders/${id}/deliver`, {}, owner)).status, 200);
+  await db.run("UPDATE orders SET delivered_at='2031-03-09T22:30:00.000Z' WHERE id=?", id);
+  const rep = await call('GET', '/api/admin/reports?from=2031-03-10&to=2031-03-10', undefined, owner);
+  assert.equal(rep.status, 200, JSON.stringify(rep.json));
+  assert.equal(rep.json.sales.orders, 1);
+  assert.deepEqual(rep.json.daily.map((d) => d.day), ['2031-03-10']);
+  const prev = await call('GET', '/api/admin/reports?from=2031-03-09&to=2031-03-09', undefined, owner);
+  assert.equal(prev.json.sales.orders, 0);
 });

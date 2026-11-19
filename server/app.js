@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { DATA_DIR, tx, getSettings } from './db.js';
+import { tx, getSettings } from './db.js';
+import { exportAll } from './backup.js';
 import {
   HttpError, STATUS_LABELS, priceCart, createOrder, orderAction, publicOrder, adminOrder, stockOp, r3,
 } from './orders.js';
@@ -31,13 +32,13 @@ export function verifyPassword(pw, stored) {
   const a = Buffer.from(hash, 'hex'), b = crypto.scryptSync(pw, salt, 64);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
-export function createUser(db, username, password, role) {
+export async function createUser(db, username, password, role) {
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username || '')) throw new HttpError(400, 'اسم المستخدم: 3-32 حرفًا إنجليزيًا أو أرقامًا');
   if (typeof password !== 'string' || password.length < 8) throw new HttpError(400, 'كلمة المرور يجب ألا تقل عن 8 أحرف');
   if (!['owner', 'staff'].includes(role)) throw new HttpError(400, 'صلاحية غير صحيحة');
   try {
-    return Number(db.prepare('INSERT INTO users(username,pass_hash,role) VALUES(?,?,?)').run(username, hashPassword(password), role).lastInsertRowid);
-  } catch { throw new HttpError(409, 'اسم المستخدم مستخدم مسبقًا'); }
+    return await db.insert('INSERT INTO users(username,pass_hash,role) VALUES(?,?,?)', username, hashPassword(password), role);
+  } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'اسم المستخدم مستخدم مسبقًا'); throw e; }
 }
 
 /* ---------- تحديد المعدل ---------- */
@@ -52,8 +53,8 @@ function hit(key, max, windowMs) {
 }
 
 export function createApp(db) {
-  const audit = (actor, action, detail) =>
-    db.prepare('INSERT INTO audit_log(actor,action,detail) VALUES(?,?,?)').run(actor, action, detail ? String(detail).slice(0, 500) : null);
+  const audit = async (actor, action, detail) =>
+    (await db.run('INSERT INTO audit_log(actor,action,detail) VALUES(?,?,?)', actor, action, detail ? String(detail).slice(0, 500) : null));
 
   // معرّف إصدار لتحديث الـPWA تلقائيًا عند تغيّر الملفات
   const buildId = (() => {
@@ -64,11 +65,11 @@ export function createApp(db) {
   })();
 
   /* ---------- جلسات الإدارة ---------- */
-  function currentUser(req) {
+  async function currentUser(req) {
     const m = /(?:^|;\s*)sid=([A-Za-z0-9_-]+)/.exec(req.headers.cookie || '');
     if (!m) return null;
-    const row = db.prepare(`SELECT u.id,u.username,u.role,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id
-      WHERE s.token_hash=? AND u.active=1`).get(sha(m[1]));
+    const row = (await db.get(`SELECT u.id,u.username,u.role,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token_hash=? AND u.active=1`, sha(m[1])));
     if (!row || row.expires_at < Date.now()) return null;
     return row;
   }
@@ -87,13 +88,13 @@ export function createApp(db) {
     if (!Number.isFinite(n) || n < min || n > max || (int && !Number.isInteger(n))) throw new HttpError(400, `${label} غير صحيحة`);
     return n;
   };
-  function cleanProduct(b) {
+  async function cleanProduct(b) {
     const factory_id = num(b.factory_id, { int: true, label: 'المصنع' });
-    if (!db.prepare('SELECT 1 FROM factories WHERE id=?').get(factory_id)) throw new HttpError(400, 'المصنع غير موجود');
+    if (!(await db.get('SELECT 1 FROM factories WHERE id=?', factory_id))) throw new HttpError(400, 'المصنع غير موجود');
     const unit = isUnit(b.unit) ? b.unit : null;
     if (!unit) throw new HttpError(400, 'اختر وحدة البيع');
     const category_id = b.category_id ? num(b.category_id, { int: true, label: 'التصنيف' }) : null;
-    if (category_id && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(category_id)) throw new HttpError(400, 'التصنيف غير موجود');
+    if (category_id && !(await db.get('SELECT 1 FROM categories WHERE id=?', category_id))) throw new HttpError(400, 'التصنيف غير موجود');
     const image = b.image ? String(b.image) : null;
     if (image && !/^\/uploads\/[a-f0-9]{32}\.(png|jpg|webp)$/.test(image)) throw new HttpError(400, 'مسار الصورة غير صحيح');
     return {
@@ -121,11 +122,11 @@ export function createApp(db) {
   });
 
   /* ===== واجهة العملاء ===== */
-  route('GET', '/api/catalog', () => {
-    const settings = getSettings(db);
-    const products = db.prepare(`SELECT p.id,p.factory_id,f.name factory_name,p.category_id,c.name category_name,p.name,p.cement_type,p.spec,p.unit,p.bag_weight_kg,p.image,
+  route('GET', '/api/catalog', async () => {
+    const settings = await getSettings(db);
+    const products = (await db.all(`SELECT p.id,p.factory_id,f.name factory_name,p.category_id,c.name category_name,p.name,p.cement_type,p.spec,p.unit,p.bag_weight_kg,p.image,
       p.retail_price,p.discount_percent,p.offer_note,p.min_order,p.wholesale_min,p.low_stock_at,p.paused,ROUND(p.stock-p.reserved,3) available
-      FROM products p JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND f.active=1 ORDER BY f.sort,f.name,p.name`).all()
+      FROM products p JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id WHERE p.active=1 AND f.active=1 ORDER BY f.sort,f.name,p.name`))
       .map((p) => ({
         ...p, price: Math.round(p.retail_price * (1 - p.discount_percent / 100)),
         wholesale_min: p.wholesale_min ?? defaultWholesaleMin(settings, p.unit),
@@ -134,325 +135,325 @@ export function createApp(db) {
       }));
     return {
       store: publicFields(settings), statusLabels: STATUS_LABELS, units: UNITS,
-      categories: db.prepare('SELECT id,name FROM categories WHERE active=1 ORDER BY sort,name').all(),
-      factories: db.prepare('SELECT id,name FROM factories WHERE active=1 ORDER BY sort,name').all(),
-      products, zones: db.prepare('SELECT id,name,indicative_fee FROM zones WHERE active=1 ORDER BY name').all(),
+      categories: (await db.all('SELECT id,name FROM categories WHERE active=1 ORDER BY sort,name')),
+      factories: (await db.all('SELECT id,name FROM factories WHERE active=1 ORDER BY sort,name')),
+      products, zones: (await db.all('SELECT id,name,indicative_fee FROM zones WHERE active=1 ORDER BY name')),
     };
   });
-  route('POST', '/api/quote', (ctx) => {
-    const r = priceCart(db, ctx.body.items, { wholesale: !!ctx.body.wholesale });
+  route('POST', '/api/quote', async (ctx) => {
+    const r = await priceCart(db, ctx.body.items, { wholesale: !!ctx.body.wholesale });
     return { lines: r.lines, problems: r.problems, items_total: r.items_total, discount: r.discount };
   });
-  const submit = (type) => (ctx) => {
+  const submit = (type) => async (ctx) => {
     if (!hit('order:' + ctx.ip, Number(process.env.ORDER_RATE_MAX || 20), 10 * 60e3)) throw new HttpError(429, 'محاولات كثيرة، حاول لاحقًا');
-    const r = createOrder(db, ctx.body, type);
+    const r = await createOrder(db, ctx.body, type);
     return { status: r.duplicate ? 200 : 201, body: { number: r.number, token: r.token, duplicate: !!r.duplicate } };
   };
   route('POST', '/api/orders', submit('retail'));
   route('POST', '/api/wholesale-requests', submit('wholesale'));
-  const byToken = (token) => {
-    const o = /^[A-Za-z0-9_-]{20,64}$/.test(token) && db.prepare('SELECT * FROM orders WHERE token=?').get(token);
+  const byToken = async (token) => {
+    const o = /^[A-Za-z0-9_-]{20,64}$/.test(token) && (await db.get('SELECT * FROM orders WHERE token=?', token));
     if (!o) throw new HttpError(404, 'رابط المتابعة غير صحيح');
     return o;
   };
-  route('GET', '/api/track/:token', (ctx) => publicOrder(db, byToken(ctx.params.token)));
-  route('POST', '/api/track/:token/:action', (ctx) => {
+  route('GET', '/api/track/:token', async (ctx) => await publicOrder(db, await byToken(ctx.params.token)));
+  route('POST', '/api/track/:token/:action', async (ctx) => {
     if (!hit('track:' + ctx.ip, 60, 10 * 60e3)) throw new HttpError(429, 'محاولات كثيرة، حاول لاحقًا');
-    const o = byToken(ctx.params.token);
+    const o = await byToken(ctx.params.token);
     if (!['approve', 'reject', 'transfer'].includes(ctx.params.action)) throw new HttpError(404, 'غير موجود');
-    orderAction(db, o.id, ctx.params.action, ctx.body, 'العميل', { customer: true });
-    return publicOrder(db, byToken(ctx.params.token));
+    await orderAction(db, o.id, ctx.params.action, ctx.body, 'العميل', { customer: true });
+    return await publicOrder(db, await byToken(ctx.params.token));
   });
 
   /* ===== دخول الإدارة ===== */
-  route('POST', '/api/admin/login', (ctx) => {
+  route('POST', '/api/admin/login', async (ctx) => {
     const username = String(ctx.body.username || '').slice(0, 40), password = String(ctx.body.password || '').slice(0, 200);
     const key = `login:${ctx.ip}:${username.toLowerCase()}`;
     if (!hit('loginip:' + ctx.ip, 30, 15 * 60e3) || (buckets.get(key)?.n ?? 0) >= 5) throw new HttpError(429, 'محاولات دخول كثيرة. انتظر 15 دقيقة.');
-    const u = db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(username);
+    const u = (await db.get('SELECT * FROM users WHERE username=? AND active=1', username));
     const ok = verifyPassword(password, u ? u.pass_hash : DUMMY) && !!u;
-    if (!ok) { hit(key, 5, 15 * 60e3); audit(username, 'login_failed', ctx.ip); throw new HttpError(401, 'اسم المستخدم أو كلمة المرور غير صحيحة'); }
+    if (!ok) { hit(key, 5, 15 * 60e3); await audit(username, 'login_failed', ctx.ip); throw new HttpError(401, 'اسم المستخدم أو كلمة المرور غير صحيحة'); }
     buckets.delete(key);
     const token = crypto.randomBytes(32).toString('base64url');
-    db.prepare('DELETE FROM sessions WHERE expires_at<?').run(Date.now());
-    db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(sha(token), u.id, Date.now() + 7 * 864e5);
-    audit(u.username, 'login', ctx.ip);
+    (await db.run('DELETE FROM sessions WHERE expires_at<?', Date.now()));
+    (await db.run('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)', sha(token), u.id, Date.now() + 7 * 864e5));
+    await audit(u.username, 'login', ctx.ip);
     const secure = ctx.req.headers['x-forwarded-proto'] === 'https' || process.env.FORCE_SECURE_COOKIE === '1';
     return { headers: { 'Set-Cookie': `sid=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 86400}${secure ? '; Secure' : ''}` }, body: { username: u.username, role: u.role } };
   });
-  route('POST', '/api/admin/logout', (ctx) => {
+  route('POST', '/api/admin/logout', async (ctx) => {
     const m = /(?:^|;\s*)sid=([A-Za-z0-9_-]+)/.exec(ctx.req.headers.cookie || '');
-    if (m) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha(m[1]));
+    if (m) (await db.run('DELETE FROM sessions WHERE token_hash=?', sha(m[1])));
     return { headers: { 'Set-Cookie': 'sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' }, body: { ok: true } };
   });
-  route('GET', '/api/admin/me', (ctx) => { requireUser(ctx); return { username: ctx.user.username, role: ctx.user.role, statusLabels: STATUS_LABELS, units: UNITS, store: publicFields(getSettings(db)) }; });
-  route('GET', '/api/admin/summary', (ctx) => { requireUser(ctx); return dashboard(db); });
+  route('GET', '/api/admin/me', async (ctx) => { requireUser(ctx); return { username: ctx.user.username, role: ctx.user.role, statusLabels: STATUS_LABELS, units: UNITS, store: publicFields(await getSettings(db)) }; });
+  route('GET', '/api/admin/summary', async (ctx) => { requireUser(ctx); return await dashboard(db); });
 
   /* ===== المصانع ===== */
-  route('GET', '/api/admin/factories', (ctx) => { requireUser(ctx); return db.prepare('SELECT * FROM factories ORDER BY sort,name').all(); });
-  route('POST', '/api/admin/factories', (ctx) => {
+  route('GET', '/api/admin/factories', async (ctx) => { requireUser(ctx); return (await db.all('SELECT * FROM factories ORDER BY sort,name')); });
+  route('POST', '/api/admin/factories', async (ctx) => {
     requireOwner(ctx);
     try {
-      const id = Number(db.prepare('INSERT INTO factories(name,sort) VALUES(?,?)').run(str(ctx.body.name, 80, true, 'اسم المصنع'), num(ctx.body.sort ?? 0, { int: true })).lastInsertRowid);
-      audit(ctx.user.username, 'factory_create', ctx.body.name);
+      const id = Number((await db.insert('INSERT INTO factories(name,sort) VALUES(?,?)', str(ctx.body.name, 80, true, 'اسم المصنع'), num(ctx.body.sort ?? 0, { int: true }))));
+      await audit(ctx.user.username, 'factory_create', ctx.body.name);
       return { status: 201, body: { id } };
-    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'المصنع موجود مسبقًا'); }
+    } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'المصنع موجود مسبقًا'); throw e; }
   });
-  route('PUT', '/api/admin/factories/:id', (ctx) => {
+  route('PUT', '/api/admin/factories/:id', async (ctx) => {
     requireOwner(ctx);
     try {
-      db.prepare('UPDATE factories SET name=?, active=?, sort=? WHERE id=?')
-        .run(str(ctx.body.name, 80, true, 'اسم المصنع'), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, num(ctx.body.sort ?? 0, { int: true }), Number(ctx.params.id));
-    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'الاسم مستخدم'); }
-    audit(ctx.user.username, 'factory_update', ctx.params.id);
+      (await db.run('UPDATE factories SET name=?, active=?, sort=? WHERE id=?', str(ctx.body.name, 80, true, 'اسم المصنع'), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, num(ctx.body.sort ?? 0, { int: true }), Number(ctx.params.id)));
+    } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'الاسم مستخدم'); throw e; }
+    await audit(ctx.user.username, 'factory_update', ctx.params.id);
     return { ok: true };
   });
 
   /* ===== التصنيفات ===== */
-  route('GET', '/api/admin/categories', (ctx) => { requireUser(ctx); return db.prepare('SELECT * FROM categories ORDER BY sort,name').all(); });
-  route('POST', '/api/admin/categories', (ctx) => {
+  route('GET', '/api/admin/categories', async (ctx) => { requireUser(ctx); return (await db.all('SELECT * FROM categories ORDER BY sort,name')); });
+  route('POST', '/api/admin/categories', async (ctx) => {
     requireOwner(ctx);
     try {
-      const id = Number(db.prepare('INSERT INTO categories(name,sort) VALUES(?,?)').run(str(ctx.body.name, 80, true, 'اسم التصنيف'), num(ctx.body.sort ?? 0, { int: true })).lastInsertRowid);
-      audit(ctx.user.username, 'category_create', ctx.body.name);
+      const id = Number((await db.insert('INSERT INTO categories(name,sort) VALUES(?,?)', str(ctx.body.name, 80, true, 'اسم التصنيف'), num(ctx.body.sort ?? 0, { int: true }))));
+      await audit(ctx.user.username, 'category_create', ctx.body.name);
       return { status: 201, body: { id } };
-    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'التصنيف موجود مسبقًا'); }
+    } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'التصنيف موجود مسبقًا'); throw e; }
   });
-  route('PUT', '/api/admin/categories/:id', (ctx) => {
+  route('PUT', '/api/admin/categories/:id', async (ctx) => {
     requireOwner(ctx);
     try {
-      db.prepare('UPDATE categories SET name=?, active=?, sort=? WHERE id=?')
-        .run(str(ctx.body.name, 80, true, 'اسم التصنيف'), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, num(ctx.body.sort ?? 0, { int: true }), Number(ctx.params.id));
-    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'الاسم مستخدم'); }
-    audit(ctx.user.username, 'category_update', ctx.params.id);
+      (await db.run('UPDATE categories SET name=?, active=?, sort=? WHERE id=?', str(ctx.body.name, 80, true, 'اسم التصنيف'), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, num(ctx.body.sort ?? 0, { int: true }), Number(ctx.params.id)));
+    } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'الاسم مستخدم'); throw e; }
+    await audit(ctx.user.username, 'category_update', ctx.params.id);
     return { ok: true };
   });
 
   /* ===== المنتجات والمخزون ===== */
-  route('GET', '/api/admin/products', (ctx) => {
+  route('GET', '/api/admin/products', async (ctx) => {
     requireUser(ctx);
-    return db.prepare(`SELECT p.*, f.name factory_name, c.name category_name, ROUND(p.stock-p.reserved,3) available FROM products p
-      JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id ORDER BY f.name,p.name`).all();
+    return (await db.all(`SELECT p.*, f.name factory_name, c.name category_name, ROUND(p.stock-p.reserved,3) available FROM products p
+      JOIN factories f ON f.id=p.factory_id LEFT JOIN categories c ON c.id=p.category_id ORDER BY f.name,p.name`));
   });
-  route('POST', '/api/admin/products', (ctx) => {
+  route('POST', '/api/admin/products', async (ctx) => {
     requireOwner(ctx);
-    const c = cleanProduct(ctx.body);
+    const c = await cleanProduct(ctx.body);
     const stock = num(ctx.body.stock ?? 0, { label: 'المخزون الافتتاحي' });
     if (unitIsInt(c.unit) && !Number.isInteger(stock)) throw new HttpError(400, 'هذه الوحدة تُباع بأعداد صحيحة فقط');
-    const id = tx(db, () => {
-      const r = db.prepare(`INSERT INTO products(factory_id,category_id,name,cement_type,spec,unit,bag_weight_kg,image,retail_price,discount_percent,offer_note,
-        stock,min_order,wholesale_min,wholesale_hint,low_stock_at,active,paused) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
-          stock, c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused);
-      const pid = Number(r.lastInsertRowid);
-      if (stock > 0) db.prepare('INSERT INTO stock_movements(at,product_id,kind,qty,stock_after,note,actor) VALUES(?,?,?,?,?,?,?)').run(now(), pid, 'in', stock, stock, 'رصيد افتتاحي', ctx.user.username);
+    const id = await tx(db, async (db) => {
+      const pid = (await db.insert(`INSERT INTO products(factory_id,category_id,name,cement_type,spec,unit,bag_weight_kg,image,retail_price,discount_percent,offer_note,
+        stock,min_order,wholesale_min,wholesale_hint,low_stock_at,active,paused) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
+          stock, c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused));
+      if (stock > 0) (await db.run('INSERT INTO stock_movements(at,product_id,kind,qty,stock_after,note,actor) VALUES(?,?,?,?,?,?,?)', now(), pid, 'in', stock, stock, 'رصيد افتتاحي', ctx.user.username));
       return pid;
     });
-    audit(ctx.user.username, 'product_create', `${id} ${c.name}`);
+    await audit(ctx.user.username, 'product_create', `${id} ${c.name}`);
     return { status: 201, body: { id } };
   });
-  route('PUT', '/api/admin/products/:id', (ctx) => {
+  route('PUT', '/api/admin/products/:id', async (ctx) => {
     requireOwner(ctx);
-    const id = Number(ctx.params.id), old = db.prepare('SELECT * FROM products WHERE id=?').get(id);
+    const id = Number(ctx.params.id), old = (await db.get('SELECT * FROM products WHERE id=?', id));
     if (!old) throw new HttpError(404, 'المنتج غير موجود');
-    const c = cleanProduct(ctx.body);
-    db.prepare(`UPDATE products SET factory_id=?,category_id=?,name=?,cement_type=?,spec=?,unit=?,bag_weight_kg=?,image=?,retail_price=?,discount_percent=?,offer_note=?,
-      min_order=?,wholesale_min=?,wholesale_hint=?,low_stock_at=?,active=?,paused=?,updated_at=? WHERE id=?`)
-      .run(c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
-        c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused, now(), id);
-    audit(ctx.user.username, 'product_update', `${id} ${c.name}${old.retail_price !== c.retail_price ? ` السعر ${old.retail_price}←${c.retail_price}` : ''}`);
+    const c = await cleanProduct(ctx.body);
+    (await db.run(`UPDATE products SET factory_id=?,category_id=?,name=?,cement_type=?,spec=?,unit=?,bag_weight_kg=?,image=?,retail_price=?,discount_percent=?,offer_note=?,
+      min_order=?,wholesale_min=?,wholesale_hint=?,low_stock_at=?,active=?,paused=?,updated_at=? WHERE id=?`, c.factory_id, c.category_id, c.name, c.cement_type, c.spec, c.unit, c.bag_weight_kg, c.image, c.retail_price, c.discount_percent, c.offer_note,
+        c.min_order, c.wholesale_min, c.wholesale_hint, c.low_stock_at, c.active, c.paused, now(), id));
+    await audit(ctx.user.username, 'product_update', `${id} ${c.name}${old.retail_price !== c.retail_price ? ` السعر ${old.retail_price}←${c.retail_price}` : ''}`);
     return { ok: true };
   });
-  route('POST', '/api/admin/products/:id/stock', (ctx) => {
+  route('POST', '/api/admin/products/:id/stock', async (ctx) => {
     requireUser(ctx);
-    const r = stockOp(db, Number(ctx.params.id), ctx.body.op, ctx.body, ctx.user.username);
-    audit(ctx.user.username, 'stock_' + ctx.body.op, `${ctx.params.id} ${ctx.body.qty}`);
+    const r = await stockOp(db, Number(ctx.params.id), ctx.body.op, ctx.body, ctx.user.username);
+    await audit(ctx.user.username, 'stock_' + ctx.body.op, `${ctx.params.id} ${ctx.body.qty}`);
     return r;
   });
-  route('GET', '/api/admin/stock-movements', (ctx) => {
+  route('GET', '/api/admin/stock-movements', async (ctx) => {
     requireUser(ctx);
     const pid = Number(ctx.url.searchParams.get('product_id')) || null;
-    return db.prepare(`SELECT m.*, p.name product_name FROM stock_movements m JOIN products p ON p.id=m.product_id
-      ${pid ? 'WHERE m.product_id=?' : ''} ORDER BY m.id DESC LIMIT 200`).all(...(pid ? [pid] : []));
+    return (await db.all(`SELECT m.*, p.name product_name FROM stock_movements m JOIN products p ON p.id=m.product_id
+      ${pid ? 'WHERE m.product_id=?' : ''} ORDER BY m.id DESC LIMIT 200`, ...(pid ? [pid] : [])));
   });
-  route('POST', '/api/admin/upload', (ctx) => {
+  route('POST', '/api/admin/upload', async (ctx) => {
     requireOwner(ctx);
     const b64 = String(ctx.body.data || '').replace(/^data:[^,]*,/, '');
     const buf = Buffer.from(b64, 'base64');
-    if (buf.length < 100 || buf.length > 3 * 1024 * 1024) throw new HttpError(400, 'حجم الصورة غير مناسب (الحد 3 ميغابايت)');
+    if (buf.length < 100 || buf.length > 1024 * 1024) throw new HttpError(400, 'حجم الصورة غير مناسب (الحد 1 ميغابايت). الصور تُضغط تلقائيًا من لوحة الإدارة.');
     let ext = null;
     if (buf[0] === 0x89 && buf.toString('latin1', 1, 4) === 'PNG') ext = 'png';
     else if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ext = 'jpg';
     else if (buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') ext = 'webp';
     if (!ext) throw new HttpError(400, 'صيغة الصورة غير مدعومة (PNG أو JPG أو WEBP)');
     const name = crypto.randomBytes(16).toString('hex') + '.' + ext;
-    fs.writeFileSync(path.join(DATA_DIR, 'uploads', name), buf);
+    await db.run('INSERT INTO uploads(name,mime,data) VALUES(?,?,?)', name, MIME['.' + ext], buf);
     return { path: '/uploads/' + name };
   });
 
   /* ===== الطلبات ===== */
-  route('GET', '/api/admin/orders', (ctx) => {
+  route('GET', '/api/admin/orders', async (ctx) => {
     requireUser(ctx);
     const q = ctx.url.searchParams, where = [], args = [];
     const s = (q.get('q') || '').trim().slice(0, 60);
-    if (s) { const like = '%' + s.replace(/[%_\\]/g, '\\$&') + '%'; where.push("(number LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')"); args.push(like, like, like); }
+    if (s) { const like = '%' + s.replace(/[%_\\]/g, '\\$&') + '%'; where.push("(number ILIKE ? ESCAPE '\\' OR name ILIKE ? ESCAPE '\\' OR phone ILIKE ? ESCAPE '\\')"); args.push(like, like, like); }
     if (q.get('status') && STATUS_LABELS[q.get('status')]) { where.push('status=?'); args.push(q.get('status')); }
     if (q.get('group') === 'active') where.push("status NOT IN ('delivered','completed_paid','cancelled')");
     if (['retail', 'wholesale'].includes(q.get('type'))) { where.push('type=?'); args.push(q.get('type')); }
-    const rows = db.prepare(`SELECT id,number,type,status,name,phone,region,fulfillment,total,items_total,delivery_fee,payment_method,created_at,
+    const rows = (await db.all(`SELECT id,number,type,status,name,phone,region,fulfillment,total,items_total,delivery_fee,payment_method,created_at,
       (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.order_id=o.id) paid FROM orders o
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT 200`).all(...args);
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT 200`, ...args));
     return rows.map((r) => ({ ...r, status_label: STATUS_LABELS[r.status] }));
   });
-  const adminOrderById = (id) => {
-    const o = db.prepare('SELECT * FROM orders WHERE id=?').get(Number(id));
+  const adminOrderById = async (id) => {
+    const o = (await db.get('SELECT * FROM orders WHERE id=?', Number(id)));
     if (!o) throw new HttpError(404, 'الطلب غير موجود');
     return o;
   };
-  route('GET', '/api/admin/orders/:id', (ctx) => { requireUser(ctx); return adminOrder(db, adminOrderById(ctx.params.id)); });
-  route('POST', '/api/admin/orders/:id/:action', (ctx) => {
+  route('GET', '/api/admin/orders/:id', async (ctx) => { requireUser(ctx); return await adminOrder(db, await adminOrderById(ctx.params.id)); });
+  route('POST', '/api/admin/orders/:id/:action', async (ctx) => {
     requireUser(ctx);
-    const o = adminOrderById(ctx.params.id);
-    orderAction(db, o.id, ctx.params.action, ctx.body, ctx.user.username);
-    audit(ctx.user.username, 'order_' + ctx.params.action, o.number);
-    return adminOrder(db, adminOrderById(ctx.params.id));
+    const o = await adminOrderById(ctx.params.id);
+    await orderAction(db, o.id, ctx.params.action, ctx.body, ctx.user.username);
+    await audit(ctx.user.username, 'order_' + ctx.params.action, o.number);
+    return await adminOrder(db, await adminOrderById(ctx.params.id));
   });
 
   /* ===== العملاء ===== */
-  route('GET', '/api/admin/customers', (ctx) => {
+  route('GET', '/api/admin/customers', async (ctx) => {
     requireUser(ctx);
     const s = (ctx.url.searchParams.get('q') || '').trim().slice(0, 60), like = '%' + s.replace(/[%_\\]/g, '\\$&') + '%';
-    return db.prepare(`SELECT c.*, COUNT(o.id) orders, COALESCE(SUM(CASE WHEN o.status IN ('delivered','completed_paid') THEN o.total END),0) total
+    return (await db.all(`SELECT c.*, COUNT(o.id) orders, COALESCE(SUM(CASE WHEN o.status IN ('delivered','completed_paid') THEN o.total END),0) total
       FROM customers c LEFT JOIN orders o ON o.customer_id=c.id
-      ${s ? "WHERE c.name LIKE ? ESCAPE '\\' OR c.phone LIKE ? ESCAPE '\\'" : ''} GROUP BY c.id ORDER BY total DESC, c.id DESC LIMIT 300`)
-      .all(...(s ? [like, like] : [])).map((c) => ({ ...c, repeat: c.orders >= 2 }));
+      ${s ? "WHERE c.name ILIKE ? ESCAPE '\\' OR c.phone ILIKE ? ESCAPE '\\'" : ''} GROUP BY c.id ORDER BY total DESC, c.id DESC LIMIT 300`, ...(s ? [like, like] : []))).map((c) => ({ ...c, repeat: c.orders >= 2 }));
   });
-  route('GET', '/api/admin/customers/:id', (ctx) => {
+  route('GET', '/api/admin/customers/:id', async (ctx) => {
     requireUser(ctx);
-    const c = db.prepare('SELECT * FROM customers WHERE id=?').get(Number(ctx.params.id));
+    const c = (await db.get('SELECT * FROM customers WHERE id=?', Number(ctx.params.id)));
     if (!c) throw new HttpError(404, 'العميل غير موجود');
     return {
       ...c,
-      orders: db.prepare('SELECT id,number,type,status,total,created_at FROM orders WHERE customer_id=? ORDER BY id DESC').all(c.id).map((o) => ({ ...o, status_label: STATUS_LABELS[o.status] })),
-      addresses: db.prepare("SELECT DISTINCT region,address FROM orders WHERE customer_id=? AND fulfillment='delivery'").all(c.id),
-      prices: db.prepare('SELECT cp.product_id,cp.price,p.name FROM customer_prices cp JOIN products p ON p.id=cp.product_id WHERE cp.customer_id=?').all(c.id),
+      orders: (await db.all('SELECT id,number,type,status,total,created_at FROM orders WHERE customer_id=? ORDER BY id DESC', c.id)).map((o) => ({ ...o, status_label: STATUS_LABELS[o.status] })),
+      addresses: (await db.all("SELECT DISTINCT region,address FROM orders WHERE customer_id=? AND fulfillment='delivery'", c.id)),
+      prices: (await db.all('SELECT cp.product_id,cp.price,p.name FROM customer_prices cp JOIN products p ON p.id=cp.product_id WHERE cp.customer_id=?', c.id)),
     };
   });
-  route('PUT', '/api/admin/customers/:id', (ctx) => {
+  route('PUT', '/api/admin/customers/:id', async (ctx) => {
     requireUser(ctx);
     if (ctx.body.wholesale_approved !== undefined) requireOwner(ctx);
-    const c = db.prepare('SELECT * FROM customers WHERE id=?').get(Number(ctx.params.id));
+    const c = (await db.get('SELECT * FROM customers WHERE id=?', Number(ctx.params.id)));
     if (!c) throw new HttpError(404, 'العميل غير موجود');
-    db.prepare('UPDATE customers SET wholesale_approved=?, notes=? WHERE id=?')
-      .run(ctx.body.wholesale_approved === undefined ? c.wholesale_approved : ctx.body.wholesale_approved ? 1 : 0, ctx.body.notes === undefined ? c.notes : str(ctx.body.notes, 500), c.id);
-    audit(ctx.user.username, 'customer_update', c.id);
+    (await db.run('UPDATE customers SET wholesale_approved=?, notes=? WHERE id=?', ctx.body.wholesale_approved === undefined ? c.wholesale_approved : ctx.body.wholesale_approved ? 1 : 0, ctx.body.notes === undefined ? c.notes : str(ctx.body.notes, 500), c.id));
+    await audit(ctx.user.username, 'customer_update', c.id);
     return { ok: true };
   });
-  route('PUT', '/api/admin/customers/:id/prices', (ctx) => {
+  route('PUT', '/api/admin/customers/:id/prices', async (ctx) => {
     requireOwner(ctx);
     const cid = Number(ctx.params.id), pid = num(ctx.body.product_id, { int: true, label: 'المنتج' });
-    if (ctx.body.price === null) db.prepare('DELETE FROM customer_prices WHERE customer_id=? AND product_id=?').run(cid, pid);
-    else db.prepare('INSERT OR REPLACE INTO customer_prices(customer_id,product_id,price) VALUES(?,?,?)').run(cid, pid, num(ctx.body.price, { int: true, label: 'السعر' }));
-    audit(ctx.user.username, 'customer_price', `${cid}/${pid}`);
+    if (ctx.body.price === null) (await db.run('DELETE FROM customer_prices WHERE customer_id=? AND product_id=?', cid, pid));
+    else (await db.run('INSERT INTO customer_prices(customer_id,product_id,price) VALUES(?,?,?) ON CONFLICT (customer_id,product_id) DO UPDATE SET price=EXCLUDED.price', cid, pid, num(ctx.body.price, { int: true, label: 'السعر' })));
+    await audit(ctx.user.username, 'customer_price', `${cid}/${pid}`);
     return { ok: true };
   });
 
   /* ===== مناطق التوصيل ===== */
-  route('GET', '/api/admin/zones', (ctx) => { requireUser(ctx); return db.prepare('SELECT * FROM zones ORDER BY name').all(); });
-  route('POST', '/api/admin/zones', (ctx) => {
+  route('GET', '/api/admin/zones', async (ctx) => { requireUser(ctx); return (await db.all('SELECT * FROM zones ORDER BY name')); });
+  route('POST', '/api/admin/zones', async (ctx) => {
     requireOwner(ctx);
     try {
-      const id = Number(db.prepare('INSERT INTO zones(name,indicative_fee) VALUES(?,?)').run(str(ctx.body.name, 80, true, 'اسم المنطقة'), num(ctx.body.indicative_fee, { nullable: true, int: true, label: 'الأجرة' })).lastInsertRowid);
+      const id = Number((await db.insert('INSERT INTO zones(name,indicative_fee) VALUES(?,?)', str(ctx.body.name, 80, true, 'اسم المنطقة'), num(ctx.body.indicative_fee, { nullable: true, int: true, label: 'الأجرة' }))));
       return { status: 201, body: { id } };
-    } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(409, 'المنطقة موجودة'); }
+    } catch (e) { if (e?.code === '23505') throw new HttpError(409, 'المنطقة موجودة'); throw e; }
   });
-  route('PUT', '/api/admin/zones/:id', (ctx) => {
+  route('PUT', '/api/admin/zones/:id', async (ctx) => {
     requireOwner(ctx);
-    db.prepare('UPDATE zones SET name=?, indicative_fee=?, active=? WHERE id=?')
-      .run(str(ctx.body.name, 80, true, 'اسم المنطقة'), num(ctx.body.indicative_fee, { nullable: true, int: true, label: 'الأجرة' }), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, Number(ctx.params.id));
+    (await db.run('UPDATE zones SET name=?, indicative_fee=?, active=? WHERE id=?', str(ctx.body.name, 80, true, 'اسم المنطقة'), num(ctx.body.indicative_fee, { nullable: true, int: true, label: 'الأجرة' }), ctx.body.active === false || ctx.body.active === 0 ? 0 : 1, Number(ctx.params.id)));
     return { ok: true };
   });
-  route('GET', '/api/admin/deliveries', (ctx) => {
+  route('GET', '/api/admin/deliveries', async (ctx) => {
     requireUser(ctx);
-    return db.prepare(`SELECT id,number,name,phone,region,address,status,scheduled_at,driver_name,driver_phone,delivery_fee
-      FROM orders WHERE fulfillment='delivery' AND status IN ('confirmed','preparing','out_for_delivery') ORDER BY scheduled_at IS NULL, scheduled_at, id`).all()
+    return (await db.all(`SELECT id,number,name,phone,region,address,status,scheduled_at,driver_name,driver_phone,delivery_fee
+      FROM orders WHERE fulfillment='delivery' AND status IN ('confirmed','preparing','out_for_delivery') ORDER BY scheduled_at IS NULL, scheduled_at, id`))
       .map((r) => ({ ...r, status_label: STATUS_LABELS[r.status] }));
   });
 
   /* ===== التقارير ===== */
-  route('GET', '/api/admin/reports', (ctx) => {
+  route('GET', '/api/admin/reports', async (ctx) => {
     requireOwner(ctx);
     const kind = ctx.url.searchParams.get('csv');
     const q = Object.fromEntries(ctx.url.searchParams);
-    if (kind) return { raw: csvExport(db, kind, q), type: 'text/csv; charset=utf-8', filename: `${kind}-${q.from || 'all'}.csv` };
-    return report(db, q);
+    if (kind) return { raw: await csvExport(db, kind, q), type: 'text/csv; charset=utf-8', filename: `${kind}-${q.from || 'all'}.csv` };
+    return await report(db, q);
   });
 
   /* ===== المستخدمون والإعدادات والنسخ الاحتياطي ===== */
-  route('GET', '/api/admin/users', (ctx) => { requireOwner(ctx); return db.prepare('SELECT id,username,role,active,created_at FROM users ORDER BY id').all(); });
-  route('POST', '/api/admin/users', (ctx) => {
+  route('GET', '/api/admin/users', async (ctx) => { requireOwner(ctx); return (await db.all('SELECT id,username,role,active,created_at FROM users ORDER BY id')); });
+  route('POST', '/api/admin/users', async (ctx) => {
     requireOwner(ctx);
-    const id = createUser(db, ctx.body.username, ctx.body.password, ctx.body.role);
-    audit(ctx.user.username, 'user_create', ctx.body.username);
+    const id = await createUser(db, ctx.body.username, ctx.body.password, ctx.body.role);
+    await audit(ctx.user.username, 'user_create', ctx.body.username);
     return { status: 201, body: { id } };
   });
-  route('PUT', '/api/admin/users/:id', (ctx) => {
+  route('PUT', '/api/admin/users/:id', async (ctx) => {
     requireOwner(ctx);
-    const id = Number(ctx.params.id), u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    const id = Number(ctx.params.id), u = (await db.get('SELECT * FROM users WHERE id=?', id));
     if (!u) throw new HttpError(404, 'المستخدم غير موجود');
     const role = ctx.body.role === undefined ? u.role : ctx.body.role, active = ctx.body.active === undefined ? u.active : ctx.body.active ? 1 : 0;
     if (!['owner', 'staff'].includes(role)) throw new HttpError(400, 'صلاحية غير صحيحة');
-    if (u.role === 'owner' && (role !== 'owner' || !active) && db.prepare("SELECT COUNT(*) n FROM users WHERE role='owner' AND active=1 AND id!=?").get(id).n === 0)
+    if (u.role === 'owner' && (role !== 'owner' || !active) && (await db.get("SELECT COUNT(*) n FROM users WHERE role='owner' AND active=1 AND id!=?", id)).n === 0)
       throw new HttpError(409, 'لا يمكن إزالة آخر مدير للمتجر');
     if (ctx.body.password !== undefined) {
       if (String(ctx.body.password).length < 8) throw new HttpError(400, 'كلمة المرور يجب ألا تقل عن 8 أحرف');
-      db.prepare('UPDATE users SET pass_hash=? WHERE id=?').run(hashPassword(String(ctx.body.password)), id);
-      db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+      (await db.run('UPDATE users SET pass_hash=? WHERE id=?', hashPassword(String(ctx.body.password)), id));
+      (await db.run('DELETE FROM sessions WHERE user_id=?', id));
     }
-    db.prepare('UPDATE users SET role=?, active=? WHERE id=?').run(role, active, id);
-    if (!active) db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
-    audit(ctx.user.username, 'user_update', u.username);
+    (await db.run('UPDATE users SET role=?, active=? WHERE id=?', role, active, id));
+    if (!active) (await db.run('DELETE FROM sessions WHERE user_id=?', id));
+    await audit(ctx.user.username, 'user_update', u.username);
     return { ok: true };
   });
   const SETTING_KEYS = ['store_name', 'phone', 'whatsapp', 'city', 'warehouse_name', 'warehouse_address', 'warehouse_hours', 'bank_note', 'wholesale_min_bags', 'wholesale_min_tons'];
-  route('GET', '/api/admin/settings', (ctx) => { requireOwner(ctx); const s = getSettings(db); return Object.fromEntries(SETTING_KEYS.map((k) => [k, s[k]])); });
-  route('PUT', '/api/admin/settings', (ctx) => {
+  route('GET', '/api/admin/settings', async (ctx) => { requireOwner(ctx); const s = await getSettings(db); return Object.fromEntries(SETTING_KEYS.map((k) => [k, s[k]])); });
+  route('PUT', '/api/admin/settings', async (ctx) => {
     requireOwner(ctx);
     for (const k of SETTING_KEYS) if (ctx.body[k] !== undefined) {
       let v = String(ctx.body[k]).trim().slice(0, 500);
       if (k === 'whatsapp') v = v.replace(/\D/g, '');
       if (k.startsWith('wholesale_min')) v = String(num(v, { min: 1, label: 'الحد الأدنى' }));
-      db.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(k, v);
+      (await db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', k, v));
     }
-    audit(ctx.user.username, 'settings_update', Object.keys(ctx.body).join(','));
+    await audit(ctx.user.username, 'settings_update', Object.keys(ctx.body).join(','));
     return { ok: true };
   });
-  route('GET', '/api/admin/audit', (ctx) => { requireOwner(ctx); return db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 300').all(); });
-  route('GET', '/api/admin/backup', (ctx) => {
+  route('GET', '/api/admin/audit', async (ctx) => { requireOwner(ctx); return (await db.all('SELECT * FROM audit_log ORDER BY id DESC LIMIT 300')); });
+  route('GET', '/api/admin/backup', async (ctx) => {
     requireOwner(ctx);
-    const tmp = path.join(DATA_DIR, `backup-${crypto.randomBytes(6).toString('hex')}.db`);
-    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
-    const raw = fs.readFileSync(tmp);
-    fs.unlinkSync(tmp);
-    audit(ctx.user.username, 'backup_download', null);
-    return { raw, type: 'application/octet-stream', filename: `cement-backup-${new Date().toISOString().slice(0, 10)}.db` };
+    const raw = Buffer.from(JSON.stringify(await exportAll(db)));
+    await audit(ctx.user.username, 'backup_download', null);
+    return { raw, type: 'application/json; charset=utf-8', filename: `cement-backup-${new Date().toISOString().slice(0, 10)}.json` };
   });
 
   /* ---------- الملفات الثابتة ---------- */
-  function serveStatic(req, res, pathname) {
+  async function serveUpload(req, res, rel) {
+    const name = decodeURIComponent(rel.slice('/uploads/'.length));
+    const row = /^[a-f0-9]{32}\.(png|jpg|webp)$/.test(name) ? await db.get('SELECT mime,data FROM uploads WHERE name=?', name) : null;
+    if (!row) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('الصفحة غير موجودة'); }
+    const etag = `"${name}"`;  // اسم الملف عشوائي ولا يتغير محتواه أبدًا
+    const headers = { 'Content-Type': row.mime, ETag: etag, 'Cache-Control': 'public, max-age=31536000, immutable' };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+    res.writeHead(200, { ...headers, 'Content-Length': row.data.length });
+    res.end(row.data);
+  }
+  async function serveStatic(req, res, pathname) {
     let rel = pathname === '/' ? '/index.html' : pathname === '/admin' || pathname === '/admin/' ? '/admin/index.html' : pathname === '/invoice' ? '/invoice.html' : pathname;
     if (rel === '/sw.js') {
       const js = fs.readFileSync(path.join(PUBLIC_DIR, 'sw.js'), 'utf8').replace(/__BUILD__/g, buildId);
       res.writeHead(200, { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' });
       return res.end(js);
     }
-    let base = PUBLIC_DIR;
-    if (rel.startsWith('/uploads/')) { base = path.join(DATA_DIR, 'uploads'); rel = rel.slice('/uploads'.length); }
+    if (rel.startsWith('/uploads/')) {
+      try { return await serveUpload(req, res, rel); } catch (e) { if (e instanceof URIError) { res.writeHead(400); return res.end(); } throw e; }
+    }
     let file;
-    try { file = path.join(base, decodeURIComponent(rel)); } catch { res.writeHead(400); return res.end(); }
-    if (!file.startsWith(base + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('الصفحة غير موجودة'); }
+    try { file = path.join(PUBLIC_DIR, decodeURIComponent(rel)); } catch { res.writeHead(400); return res.end(); }
+    if (!file.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('الصفحة غير موجودة'); }
     const st = fs.statSync(file), etag = `W/"${st.size}-${Math.round(st.mtimeMs)}"`;
-    const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ETag: etag, 'Cache-Control': base !== PUBLIC_DIR ? 'public, max-age=31536000, immutable' : 'no-cache' };
+    const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ETag: etag, 'Cache-Control': 'no-cache' };
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
     res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
@@ -473,9 +474,13 @@ export function createApp(db) {
     const url = new URL(req.url, 'http://x');
     const ip = (process.env.TRUST_PROXY === '1' && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || '?';
     try {
+      if (url.pathname === '/healthz') { // فحص صحة خفيف لا يلمس قاعدة البيانات (لتنام Neon المجانية عند الخمول)
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+        return res.end('ok');
+      }
       if (!url.pathname.startsWith('/api/')) {
         for (const [k, v] of Object.entries(SEC)) res.setHeader(k, v);
-        return serveStatic(req, res, url.pathname);
+        return await serveStatic(req, res, url.pathname);
       }
       let matched = null;
       for (const r of routes) {
@@ -495,7 +500,7 @@ export function createApp(db) {
         if (text) { try { body = JSON.parse(text); } catch { throw new HttpError(400, 'صيغة البيانات غير صحيحة'); } }
         if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'صيغة البيانات غير صحيحة');
       }
-      const ctx = { req, res, url, ip, params: matched.params, body, user: isAdmin ? currentUser(req) : null };
+      const ctx = { req, res, url, ip, params: matched.params, body, user: isAdmin ? await currentUser(req) : null };
       const out = await matched.r.handler(ctx);
       if (out && out.raw !== undefined) {
         res.writeHead(200, { 'Content-Type': out.type, 'Content-Disposition': `attachment; filename="${out.filename}"`, 'Cache-Control': 'no-store', ...SEC });

@@ -5,3 +5,6 @@ backups/
 *.db-wal
 *.db-shm
 .env
+*.db
+*.zip
+*.migration-dump.json

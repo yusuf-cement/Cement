@@ -54,8 +54,8 @@ globalThis.setInterval = () => 0; globalThis.clearInterval = () => {};
 
 let server, base, cookie = '', db;
 before(async () => {
-  db = openDb(path.join(tmp, 'ui.db'));
-  createUser(db, 'boss', 'boss-pass-123', 'owner');
+  db = await openDb(process.env.TEST_DATABASE_URL || 'postgres://cement:cement@localhost:5432/cement_test?sslmode=disable', { schema: 't_ui_' + process.pid });
+  await createUser(db, 'boss', 'boss-pass-123', 'owner');
   server = createApp(db);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -67,7 +67,7 @@ before(async () => {
     return res;
   };
 });
-after(() => { server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
+after(async () => { server.close(); await db.dropSchema(); await db.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
 const tick = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 const J = (m, u, b) => fetch(u, { method: m, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'cement' }, body: b && JSON.stringify(b) }).then((r) => r.json());

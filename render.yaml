@@ -1,12 +1,14 @@
-# نشر على Render Free. تنبيه: ملفات الخادم مؤقتة في الخطة المجانية (تضيع عند إعادة التشغيل)،
-# لذلك ستنتقل البيانات إلى PostgreSQL مجاني (Neon) في المرحلة التالية.
+# نشر على Render Free مع قاعدة PostgreSQL مجانية (Neon): البيانات والصور محفوظة في القاعدة،
+# فلا تضيع عند إعادة تشغيل الخادم.
 services:
   - type: web
     name: cement-world
     runtime: docker
     plan: free
-    healthCheckPath: /api/catalog
+    healthCheckPath: /healthz
     envVars:
+      - key: DATABASE_URL
+        sync: false
       - key: ADMIN_USER
         sync: false
       - key: ADMIN_PASSWORD
