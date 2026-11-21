@@ -118,7 +118,8 @@ export function createApp(db) {
   const publicFields = (settings) => ({
     store_name: settings.store_name, phone: settings.phone, whatsapp: settings.whatsapp, city: settings.city,
     warehouse_name: settings.warehouse_name, warehouse_address: settings.warehouse_address, warehouse_hours: settings.warehouse_hours,
-    bank_note: settings.bank_note,
+    bank_note: settings.bank_note, agent_note: settings.agent_note, map_lat: settings.map_lat, map_lng: settings.map_lng,
+    wholesale_min_bags: settings.wholesale_min_bags, wholesale_min_tons: settings.wholesale_min_tons,
   });
 
   /* ===== واجهة العملاء ===== */
@@ -407,7 +408,7 @@ export function createApp(db) {
     await audit(ctx.user.username, 'user_update', u.username);
     return { ok: true };
   });
-  const SETTING_KEYS = ['store_name', 'phone', 'whatsapp', 'city', 'warehouse_name', 'warehouse_address', 'warehouse_hours', 'bank_note', 'wholesale_min_bags', 'wholesale_min_tons'];
+  const SETTING_KEYS = ['store_name', 'phone', 'whatsapp', 'city', 'warehouse_name', 'warehouse_address', 'warehouse_hours', 'bank_note', 'wholesale_min_bags', 'wholesale_min_tons', 'agent_note', 'map_lat', 'map_lng'];
   route('GET', '/api/admin/settings', async (ctx) => { requireOwner(ctx); const s = await getSettings(db); return Object.fromEntries(SETTING_KEYS.map((k) => [k, s[k]])); });
   route('PUT', '/api/admin/settings', async (ctx) => {
     requireOwner(ctx);
@@ -415,6 +416,8 @@ export function createApp(db) {
       let v = String(ctx.body[k]).trim().slice(0, 500);
       if (k === 'whatsapp') v = v.replace(/\D/g, '');
       if (k.startsWith('wholesale_min')) v = String(num(v, { min: 1, label: 'الحد الأدنى' }));
+      if (k === 'map_lat') v = String(num(v.replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c)), { min: 12, max: 19.5, label: 'خط العرض (يجب أن يكون داخل اليمن)' }));
+      if (k === 'map_lng') v = String(num(v.replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c)), { min: 41, max: 55, label: 'خط الطول (يجب أن يكون داخل اليمن)' }));
       (await db.run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', k, v));
     }
     await audit(ctx.user.username, 'settings_update', Object.keys(ctx.body).join(','));
@@ -462,7 +465,7 @@ export function createApp(db) {
   /* ---------- المعالج الرئيسي ---------- */
   const SEC = {
     'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src https://www.openstreetmap.org; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   };
   const send = (res, status, body, extra = {}) => {
     const data = JSON.stringify(body);

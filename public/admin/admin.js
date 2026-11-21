@@ -323,7 +323,7 @@ async function viewSettings() {
   const load = async () => {
     try {
       const [s, users, audit] = await Promise.all([A('GET', '/api/admin/settings'), A('GET', '/api/admin/users'), A('GET', '/api/admin/audit')]);
-      const L = { store_name: 'اسم المتجر', phone: 'رقم الهاتف', whatsapp: 'رقم واتساب الدولي (مثال 967775477377)', city: 'الموقع', warehouse_name: 'اسم المستودع', warehouse_address: 'عنوان المستودع التفصيلي', warehouse_hours: 'ساعات الاستلام', bank_note: 'تعليمات التحويل (تظهر للعميل)', wholesale_min_bags: 'حد الجملة الافتراضي (أكياس)', wholesale_min_tons: 'حد الجملة الافتراضي (طن)' };
+      const L = { store_name: 'اسم المتجر', phone: 'رقم الهاتف', whatsapp: 'رقم واتساب الدولي (مثال 967775477377)', city: 'الموقع', warehouse_name: 'اسم المستودع', warehouse_address: 'عنوان المستودع التفصيلي', warehouse_hours: 'ساعات الاستلام', bank_note: 'تعليمات التحويل (تظهر للعميل)', wholesale_min_bags: 'حد الجملة الافتراضي (أكياس)', wholesale_min_tons: 'حد الجملة الافتراضي (طن)', agent_note: 'عبارة الوكالة (تظهر أعلى الصفحة الرئيسية، اتركها فارغة لإخفائها)', map_lat: 'خط عرض موقع المستودع (من خرائط Google: اضغط مطولًا على الموقع)', map_lng: 'خط طول موقع المستودع' };
       const inputs = Object.fromEntries(Object.keys(L).map((k) => [k, k === 'bank_note' || k === 'warehouse_address' ? h('textarea', {}, s[k] || '') : h('input', { value: s[k] || '' })]));
       const un = h('input', { dir: 'ltr', autocomplete: 'off' }), up = h('input', { type: 'password', autocomplete: 'new-password', dir: 'ltr', placeholder: '8 أحرف على الأقل' }), ur = h('select', {}, h('option', { value: 'staff' }, 'موظف'), h('option', { value: 'owner' }, 'مدير'));
       box.replaceChildren(h('h2', { class: 'sec' }, 'إعدادات المتجر'),

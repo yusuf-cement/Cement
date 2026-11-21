@@ -106,13 +106,36 @@ test('المتجر: الرئيسية والمنتج والسلة والدفع و
   };
   await check('#/', /أسمنت اختبار/);
   assert.match(elements.app.text(), /تصنيف اختبار/);
+  const home = elements.app.text();
+  assert.match(home, /توريد الأسمنت للمقاولين وتجار الجملة/);
+  assert.match(home, /وكيل معتمد لأسمنت حضرموت/);
+  assert.match(home, /تجزئة/); assert.match(home, /جملة الجملة/); assert.match(home, /لتجار الأسمنت والموزّعين/);
+  assert.match(home, /من 200 كيس/);
+  assert.match(home, /سياسة الخصوصية/);
+  assert.doesNotMatch(home, /الأسمنت ومواد البناء في مأرب/, 'عبارة الهيرو القديمة محذوفة');
   await check('#/p/1', /7,000/);
   mem.cw_cart = JSON.stringify([{ id: 1, qty: 20, seen: 7000 }]);
   await check('#/cart', /140,000/);
   await check('#/checkout', /ملخص الطلب/);
   await check('#/wholesale', /بالجملة/);
+  assert.match(elements.app.text(), /نوع الطلب/); assert.match(elements.app.text(), /جملة الجملة/); assert.match(elements.app.text(), /سياسة الخصوصية/);
   await check('#/wholesale/1', /الحد الأدنى للجملة/);
   await check('#/track/' + track, /بانتظار عرض سعر الجملة/);
   await check('#/orders', /طلباتي/);
   await check('#/contact', /775477377/);
+  assert.match(elements.app.text(), /الموقع على الخريطة/); assert.match(elements.app.text(), /اعرض الخريطة/);
+  assert.match(elements.app.text(), /تقريبي لمدينة مأرب/); assert.match(elements.app.text(), /الاتجاهات/);
+  await check('#/privacy', /سياسة الخصوصية/);
+  const pv = elements.app.text();
+  for (const k of ['البيانات التي نجمعها', 'لا نبيع بياناتك', 'مدة الاحتفاظ', 'الأطفال', 'آخر تحديث']) assert.match(pv, new RegExp(k), k);
+  assert.match(pv, /775477377/);
+});
+
+test('نوع العميل في طلب الجملة يُكتب في أول الملاحظات', async () => {
+  const { custNote, CUST_TYPES } = await import(pathToFileURL(path.join(work, 'common.js')).href);
+  assert.equal(CUST_TYPES.length, 3);
+  assert.equal(custNote('trader', ''), 'نوع العميل: تاجر أسمنت / موزّع (جملة الجملة)');
+  assert.equal(custNote('contractor', '  تسليم الأسبوع القادم  '), 'نوع العميل: مقاول / مشروع (جملة)\nتسليم الأسبوع القادم');
+  assert.equal(custNote('???', 'x'), 'نوع العميل: أخرى\nx');
+  assert.ok(custNote('trader', 'ا'.repeat(450)).length <= 500, 'لا يتجاوز حد الملاحظات في الخادم');
 });

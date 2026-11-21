@@ -100,3 +100,22 @@ table.t{width:100%;border-collapse:collapse}
 table.t th,table.t td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:start;vertical-align:top}
 @media(max-width:700px){.hero .wrap{grid-template-columns:1fr}.hero .stack{display:none}.hero h1{font-size:25px}.two{grid-template-columns:1fr}.brand span{font-size:17px}}
 @media(prefers-reduced-motion:no-preference){.toast{animation:up .2s ease-out}@keyframes up{from{transform:translateY(12px);opacity:0}}}
+
+/* الهيرو والمستويات والثقة والخريطة والخصوصية */
+.agent{display:inline-block;background:#ffffff1f;border:1px solid #ffffff55;color:#fff;border-radius:99px;padding:3px 14px;font-size:14px;font-weight:700;margin-bottom:10px}
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:16px 0 4px}
+.tier{background:var(--paper);border:1px solid var(--line);border-top:5px solid var(--g2);border-radius:var(--r);padding:12px 13px;display:flex;flex-direction:column;gap:4px}
+.tier.w{border-top-color:#d8a31a}.tier.b{border-top-color:var(--gd)}
+.tier-h{display:flex;flex-direction:column;line-height:1.35}.tier-h b{font-size:19px;color:var(--gd)}.tier-who{color:var(--mute);font-size:14px}
+.tier p{margin:2px 0 8px;font-size:15px;flex:1}
+.tier .btn{align-self:flex-start}
+.trust{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:22px 0 4px}
+.trust div{background:var(--paper);border:1px solid var(--line);border-inline-start:5px solid #d8a31a;border-radius:var(--r);padding:10px 12px;font-weight:700;color:var(--gd);font-size:15px}
+.mapbox{margin:8px 0 10px}
+.mapbox iframe{width:100%;height:320px;border:1px solid var(--line);border-radius:var(--r);background:var(--beige2);display:block}
+.mapph{background:var(--beige2);border:1px dashed var(--line);border-radius:var(--r);padding:24px 14px;text-align:center}
+.mapph p{margin:0 0 10px}
+.prose h2{font-size:19px;margin:18px 0 4px;color:var(--gd)}
+.prose p,.prose li{font-size:16px}
+.prose ul{padding-inline-start:20px;margin:4px 0}
+.foot-links{margin:6px 0}

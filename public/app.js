@@ -1,9 +1,11 @@
-import { h, fmt, money, unitName, unitInt, setUnits, qtyText, dt, waLink, api, toast, bagSvg, field } from '/common.js';
+import { h, fmt, money, unitName, unitInt, setUnits, qtyText, dt, waLink, api, toast, bagSvg, field, CUST_TYPES, custNote } from '/common.js';
 
 const app = document.getElementById('app');
 let cat = null;               // الكتالوج الحالي (من الخادم)
 let q = '', facId = 0, catId = 0, offersOnly = false;
 let installEvt = null;
+let wsPreType = '';           // نوع العميل المختار مسبقًا عند الدخول من بطاقات الجملة
+const privacyLine = () => h('p', { class: 'hint' }, 'بإرسال بياناتك فإنك توافق على ', h('a', { href: '#/privacy', target: '_blank', rel: 'noopener' }, 'سياسة الخصوصية'), '.');
 let pollTimer = null;
 
 /* ---------- التخزين المحلي (السلة تحمل المعرّف والكمية فقط، ولا تحمل الأسعار الموثوقة) ---------- */
@@ -50,6 +52,7 @@ function shell(content, active) {
     h('footer', { class: 'foot' }, h('div', { class: 'wrap' },
       h('div', {}, `${s.store_name || 'عالم الأسمنت ومواد البناء'} — ${s.city || ''}`),
       h('div', {}, 'اتصال وواتساب: ', h('a', { href: 'tel:' + (s.phone || ''), dir: 'ltr' }, s.phone || '')),
+      h('div', { class: 'foot-links' }, h('a', { href: '#/privacy' }, 'سياسة الخصوصية'), ' · ', h('a', { href: '#/contact' }, 'موقعنا وطرق التواصل')),
       installEvt ? h('p', {}, h('button', { class: 'btn small alt', style: 'color:#fff;border-color:#fff8', onclick: async () => { installEvt.prompt(); await installEvt.userChoice; installEvt = null; route(); } }, 'تثبيت المتجر كتطبيق على هاتفك')) : h('p', {}, 'لتثبيته كتطبيق: من قائمة المتصفح اختر «إضافة إلى الشاشة الرئيسية».'))),
     s.whatsapp ? h('a', { class: 'btn wa fab', href: waLink(s.whatsapp, 'السلام عليكم، أريد الاستفسار عن الأسمنت'), target: '_blank', rel: 'noopener' }, 'واتساب') : null,
   ];
@@ -123,13 +126,29 @@ async function viewHome() {
   gridBox = h('div', { class: 'grid' });
   const s = cat.store;
   const stack = h('div', { class: 'stack', 'aria-hidden': 'true', html: '<svg viewBox="0 0 260 190" xmlns="http://www.w3.org/2000/svg"><g stroke="#123221" stroke-width="3"><rect x="14" y="120" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="126" y="120" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="70" y="66" width="104" height="58" rx="8" fill="#efe6d2"/><rect x="14" y="140" width="104" height="16" fill="#2c6a49"/><rect x="126" y="140" width="104" height="16" fill="#2c6a49"/><rect x="70" y="86" width="104" height="16" fill="#2c6a49"/></g></svg>' });
+  const bags = fmt(Number(s.wholesale_min_bags) || 200);
+  const goProducts = (e) => { e.preventDefault(); document.getElementById('products').scrollIntoView({ behavior: 'smooth' }); };
+  const tier = (cls, title, who, text, cta) => h('div', { class: 'tier ' + cls }, h('div', { class: 'tier-h' }, h('b', {}, title), h('span', { class: 'tier-who' }, who)), h('p', {}, text), cta);
   mount([
     h('section', { class: 'hero' }, h('div', { class: 'wrap' },
-      h('div', {}, h('h1', {}, 'الأسمنت ومواد البناء في مأرب'),
-        h('p', {}, 'الأسمنت ومواد البناء بالجملة والتجزئة. اختر الكمية، واستلم من مستودعنا أو نوصّله إليك. أسعار التجزئة أمامك، وأسعار الجملة نرسلها لك بعرض خاص.'),
-        h('div', { class: 'btns' }, h('a', { class: 'btn', href: '#products' , onclick: (e) => { e.preventDefault(); document.getElementById('products').scrollIntoView({ behavior: 'smooth' }); } }, 'تصفح المنتجات'), h('a', { class: 'btn alt', href: '#/wholesale' }, 'اطلب بالجملة'), s.whatsapp ? h('a', { class: 'btn alt', href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'واتساب') : null)),
+      h('div', {},
+        s.agent_note ? h('div', { class: 'agent' }, '✔ ' + s.agent_note) : null,
+        h('h1', {}, 'توريد الأسمنت للمقاولين وتجار الجملة'),
+        h('p', {}, 'أسعار التجزئة معلنة أمامك مباشرة. وللمشاريع والتجار نرسل عرض سعر خاصًا بحسب الكمية: جملة للمقاولين، وجملة الجملة للحمولات الكاملة.'),
+        h('div', { class: 'btns' },
+          h('a', { class: 'btn', href: '#products', onclick: goProducts }, 'تصفح المنتجات'),
+          h('a', { class: 'btn alt', href: '#/wholesale', onclick: () => { wsPreType = ''; } }, 'اطلب عرض سعر جملة'),
+          s.whatsapp ? h('a', { class: 'btn alt', href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'واتساب') : null)),
       stack)),
+    h('div', { class: 'wrap' }, h('div', { class: 'tiers' },
+      tier('r', 'تجزئة', 'للأفراد وأصحاب البيوت', 'الأسعار معلنة في المنتجات. اختر الكمية واطلب، ثم استلم من المستودع أو نوصّل إليك.', h('a', { class: 'btn small alt', href: '#products', onclick: goProducts }, 'تصفح المنتجات')),
+      tier('w', 'جملة', 'للمقاولين والمشاريع', `من ${bags} كيس. أرسل الكميات التي يحتاجها مشروعك ونرسل لك عرض سعر خاصًا قبل اعتماد الطلب.`, h('a', { class: 'btn small', href: '#/wholesale', onclick: () => { wsPreType = 'contractor'; } }, 'اطلب عرض سعر')),
+      tier('b', 'جملة الجملة', 'لتجار الأسمنت والموزّعين', 'للحمولات الكاملة وبالأطنان. عرض سعر مباشر حسب الكمية والمصنع، وتنسيق للاستلام أو النقل.', h('a', { class: 'btn small', href: '#/wholesale', onclick: () => { wsPreType = 'trader'; } }, 'اطلب عرض تاجر')))),
     h('div', { class: 'wrap', id: 'products' }, catChips, chips, gridBox),
+    h('div', { class: 'wrap' }, h('div', { class: 'trust' },
+      h('div', {}, 'استلام من المستودع أو توصيل إلى موقعك'),
+      h('div', {}, 'الدفع نقدًا عند الاستلام أو بالتحويل'),
+      h('div', {}, 'تابع طلبك برقم الطلب في أي وقت'))),
   ], 'home');
   renderGrid();
   if (!cat.products.length) return;
@@ -238,7 +257,7 @@ async function viewCheckout() {
   st.onZone = draw; cf.el.addEventListener('change', draw); draw();
   const btn = h('button', { class: 'btn', type: 'submit' }, 'إرسال الطلب');
   const form = h('form', { novalidate: true }, h('div', { class: 'panel' }, h('h2', {}, 'بيانات الطلب'), cf.el,
-    h('div', { class: 'lbl', style: 'font-weight:700;margin-top:8px' }, 'طريقة الدفع'), pay, field('ملاحظات', notes)), summary, msg, btn);
+    h('div', { class: 'lbl', style: 'font-weight:700;margin-top:8px' }, 'طريقة الدفع'), pay, field('ملاحظات', notes)), summary, msg, privacyLine(), btn);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!navigator.onLine) { msg.replaceChildren(h('div', { class: 'notice bad' }, 'لا يوجد اتصال بالإنترنت. لا يمكن إرسال الطلب الآن.')); return; }
@@ -283,10 +302,12 @@ async function viewWholesale(preId) {
   };
   addRow(preId);
   const saved = jget('cw_cust', {}), st = { fulfillment: 'delivery' }, cf = customerFields(saved, cat.zones, st);
-  const notes = h('textarea', { maxlength: 500, placeholder: 'ملاحظات أو موعد مطلوب (اختياري)' });
+  const notes = h('textarea', { maxlength: 450, placeholder: 'ملاحظات أو موعد مطلوب (اختياري)' });
+  const typeSel = h('select', { name: 'custType' }, CUST_TYPES.map(([v, t]) => h('option', { value: v }, t)));
+  typeSel.value = wsPreType || 'contractor';
   const msg = h('div'), btn = h('button', { class: 'btn', type: 'submit' }, 'إرسال طلب التسعير');
   const form = h('form', { novalidate: true }, rowsBox, h('button', { type: 'button', class: 'btn alt', onclick: () => addRow() }, '+ إضافة صنف آخر'),
-    h('div', { class: 'panel' }, h('h2', {}, 'بياناتك'), cf.el, field('ملاحظات', notes)), msg, btn);
+    h('div', { class: 'panel' }, h('h2', {}, 'بياناتك'), field('نوع الطلب', typeSel), cf.el, field('ملاحظات', notes)), msg, privacyLine(), btn);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const c = cf.get();
@@ -300,14 +321,14 @@ async function viewWholesale(preId) {
     btn.disabled = true; btn.textContent = 'جارٍ الإرسال…'; msg.replaceChildren();
     let key = sessionStorage.getItem('cw_idem_w'); if (!key) { key = newKey(); sessionStorage.setItem('cw_idem_w', key); }
     try {
-      const res = await api('POST', '/api/wholesale-requests', { ...c, notes: notes.value, items, idempotencyKey: key });
+      const res = await api('POST', '/api/wholesale-requests', { ...c, notes: custNote(typeSel.value, notes.value), items, idempotencyKey: key });
       jset('cw_cust', { name: c.name, phone: c.phone });
       const mine = jget('cw_orders', []); mine.unshift({ number: res.number, token: res.token, at: new Date().toISOString() }); jset('cw_orders', mine.slice(0, 30));
       sessionStorage.removeItem('cw_idem_w');
       location.hash = '#/track/' + res.token + '?new=1';
     } catch (err) { btn.disabled = false; btn.textContent = 'إرسال طلب التسعير'; msg.replaceChildren(h('div', { class: 'notice bad' }, err.message)); }
   });
-  box.append(h('h2', { class: 'sec' }, 'طلب كمية بالجملة'), h('div', { class: 'notice' }, 'أسعار الجملة لا تُعرض عامة. أرسل المصنع والنوع والكمية، وسنرسل لك عرض سعر خاصًا للموافقة عليه قبل اعتماد الطلب.'), form);
+  box.append(h('h2', { class: 'sec' }, 'طلب كمية بالجملة'), h('div', { class: 'notice' }, h('b', {}, 'للمقاولين وتجار الأسمنت (جملة وجملة الجملة). '), 'أسعار الجملة لا تُعرض عامة. أرسل المصنع والنوع والكمية، وسنرسل لك عرض سعر خاصًا للموافقة عليه قبل اعتماد الطلب.'), form);
 }
 
 /* ---------- متابعة الطلب ---------- */
@@ -368,16 +389,76 @@ async function viewOrders() {
       : h('div', { class: 'panel empty' }, 'لا توجد طلبات محفوظة على هذا الجهاز. إن كان لديك رابط متابعة، افتحه مباشرة.'),
     h('div', { class: 'notice' }, 'تُحفظ هذه القائمة على جهازك فقط.')), 'orders');
 }
+function mapPanel(s) {
+  const lat = Number(s.map_lat), lng = Number(s.map_lng);
+  if (!s.map_lat || !s.map_lng || !isFinite(lat) || !isFinite(lng)) return null;
+  const exact = !(s.map_lat === '15.4606' && s.map_lng === '45.3261');   // القيم الافتراضية = مركز مدينة مأرب (تقريبي)
+  const d = exact ? 0.006 : 0.05;
+  const embed = `https://www.openstreetmap.org/export/embed.html?bbox=${lng - d * 1.6},${lat - d},${lng + d * 1.6},${lat + d}&layer=mapnik&marker=${lat},${lng}`;
+  const holder = h('div', { class: 'mapbox' });
+  holder.append(h('div', { class: 'mapph' },
+    h('p', {}, h('b', {}, exact ? (s.warehouse_name || 'موقع المتجر') : 'موقعنا: مدينة مأرب')),
+    h('button', { class: 'btn', type: 'button', onclick: () => holder.replaceChildren(h('iframe', { src: embed, title: 'خريطة موقع المتجر', loading: 'lazy', referrerpolicy: 'no-referrer', sandbox: 'allow-scripts allow-same-origin' })) }, 'اعرض الخريطة'),
+    h('small', { class: 'hint' }, 'لتوفير باقة الإنترنت لا تُحمَّل الخريطة إلا عند الضغط.')));
+  return h('div', { class: 'panel' }, h('h2', {}, 'الموقع على الخريطة'), holder,
+    exact ? null : h('div', { class: 'notice warn' }, 'الموقع الموضّح تقريبي لمدينة مأرب. للوصول إلى المستودع تواصل معنا.'),
+    h('div', { class: 'btns' },
+      h('a', { class: 'btn alt', href: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`, target: '_blank', rel: 'noopener' }, 'افتح في خرائط Google'),
+      h('a', { class: 'btn alt', href: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, target: '_blank', rel: 'noopener' }, 'الاتجاهات')));
+}
 async function viewContact() {
   await loadCatalog();
   const s = cat.store;
   mount(h('div', { class: 'wrap' }, h('h2', { class: 'sec' }, 'عن المتجر وطرق التواصل'),
-    h('div', { class: 'panel' }, h('h2', {}, s.store_name), h('p', {}, 'بيع الأسمنت ومواد البناء بالجملة والتجزئة، مع الاستلام من المستودع أو التوصيل.'),
+    h('div', { class: 'panel' }, h('h2', {}, s.store_name),
+      s.agent_note ? h('p', {}, h('b', {}, s.agent_note)) : null,
+      h('p', {}, 'نورّد الأسمنت ومواد البناء للأفراد (تجزئة)، وللمقاولين والمشاريع (جملة)، ولتجار الأسمنت والموزّعين (جملة الجملة)، مع الاستلام من المستودع أو التوصيل.'),
       h('div', { class: 'row' }, h('span', {}, 'الموقع'), h('span', {}, s.city)),
       h('div', { class: 'row' }, h('span', {}, 'المستودع'), h('span', {}, s.warehouse_address)),
       h('div', { class: 'row' }, h('span', {}, 'ساعات العمل'), h('span', {}, s.warehouse_hours)),
       h('div', { class: 'row' }, h('span', {}, 'الهاتف'), h('a', { href: 'tel:' + s.phone, dir: 'ltr' }, s.phone)),
-      h('p', {}, h('a', { class: 'btn wa', href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'تواصل عبر واتساب')))), 'contact');
+      h('p', {}, h('a', { class: 'btn wa', href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'تواصل عبر واتساب'))),
+    mapPanel(s),
+    h('p', {}, h('a', { href: '#/privacy' }, 'سياسة الخصوصية'))), 'contact');
+}
+
+/* ---------- سياسة الخصوصية ---------- */
+async function viewPrivacy() {
+  await loadCatalog().catch(() => {});
+  const s = cat?.store || {};
+  const name = s.store_name || 'المتجر';
+  const p = (...k) => h('p', {}, ...k);
+  const ul = (...items) => h('ul', {}, items.map((x) => h('li', {}, x)));
+  const sec = (t, ...kids) => [h('h2', {}, t), ...kids];
+  mount(h('div', { class: 'wrap' }, h('div', { class: 'panel prose' },
+    h('h1', { style: 'font-size:24px;margin:0 0 2px' }, 'سياسة الخصوصية'),
+    h('small', { class: 'hint' }, 'آخر تحديث: نوفمبر 2026'),
+    p(`نحترم خصوصيتك. توضح هذه الصفحة ما تجمعه ${name} من بيانات عند استخدامك المتجر، ولماذا، وكيف نحميها.`),
+    sec('البيانات التي نجمعها', ul(
+      'بيانات تكتبها بنفسك عند الطلب: الاسم ورقم الهاتف والمنطقة والعنوان التفصيلي (للتوصيل) وملاحظات الطلب وموعد الاستلام.',
+      'تفاصيل طلبك: المنتجات والكميات والأسعار وطريقة الدفع ورقم عملية التحويل إن أرسلته.',
+      'نوع العميل (مقاول أو تاجر أو غير ذلك) في طلبات الجملة.',
+      'لا نطلب كلمات مرور من العملاء ولا بيانات بطاقات بنكية، ولا نجمع موقعك الجغرافي تلقائيًا.')),
+    sec('كيف نستخدم بياناتك', ul(
+      'استلام طلبك وتسعيره وتجهيزه وتوصيله أو تسليمه من المستودع.',
+      'التواصل معك بالهاتف أو واتساب بخصوص السعر والتوصيل والدفع.',
+      'إصدار مستند الطلب والفاتورة وتسجيل المدفوعات وإدارة المخزون.',
+      'معالجة الاستفسارات والشكاوى وحفظ حقوق الطرفين.')),
+    sec('ما يُحفظ على جهازك', p('يحفظ المتجر داخل متصفحك سلة المشتريات، واسمك ورقم هاتفك لتسهيل طلبك القادم، وروابط طلباتك السابقة لعرضها في «طلباتي». لا نستخدم ملفات تتبع إعلانية ولا أدوات تحليل خارجية. يمكنك مسح هذه البيانات في أي وقت من إعدادات المتصفح.')),
+    sec('مشاركة البيانات', ul(
+      'لا نبيع بياناتك ولا نشاركها لأغراض إعلانية.',
+      'نُطلع السائق أو الناقل فقط على ما يلزم للتسليم (الاسم والهاتف والعنوان).',
+      'نستخدم خدمات استضافة وقواعد بيانات سحابية لتشغيل المتجر وحفظ الطلبات، وهي تعالج البيانات لحسابنا.',
+      'قد نُفصح عن بيانات إذا ألزمتنا بذلك جهة مختصة وفق القانون.')),
+    sec('خدمات خارجية عند استخدامك لها', p('عند الضغط على أزرار واتساب أو الخريطة أو الاتجاهات تنتقل إلى خدمة طرف ثالث (واتساب، خرائط Google، OpenStreetMap) تخضع لسياستها هي. ولا تُحمَّل الخريطة داخل المتجر إلا عند ضغطك على «اعرض الخريطة».')),
+    sec('مدة الاحتفاظ', p('نحتفظ بسجلات الطلبات والفواتير والمدفوعات للمدة اللازمة للمحاسبة وحل أي خلاف، وبعد ذلك نحذفها أو نزيل ارتباطها بك متى أمكن.')),
+    sec('حماية بياناتك وحقوقك', ul(
+      'تنتقل بياناتك بين جهازك والمتجر عبر اتصال مشفّر (HTTPS)، ويقتصر الدخول إلى بيانات العملاء على المصرّح لهم بحسابات محمية بكلمات مرور.',
+      'لا يوجد نظام آمن بنسبة مئة بالمئة، لكننا نبذل جهدنا لحماية بياناتك.',
+      'يمكنك طلب الاطلاع على بياناتك أو تصحيحها أو حذفها بالتواصل معنا، وقد نطلب رقم الطلب ورقم هاتفك للتحقق منك. وقد نحتفظ بما يلزم قانونًا أو محاسبيًا.')),
+    sec('الأطفال', p('المتجر موجّه للبالغين وأصحاب الأعمال، ولا نجمع بيانات الأطفال عن قصد.')),
+    sec('التغييرات والتواصل', p('قد نحدّث هذه السياسة، ويظهر تاريخ آخر تحديث في أعلاها. لأي استفسار عن خصوصيتك اتصل بنا على ', h('a', { href: 'tel:' + (s.phone || ''), dir: 'ltr' }, s.phone || ''), s.whatsapp ? ' أو عبر ' : null, s.whatsapp ? h('a', { href: waLink(s.whatsapp), target: '_blank', rel: 'noopener' }, 'واتساب') : null, '.')),
+    h('p', {}, h('a', { class: 'btn alt', href: '#/' }, 'العودة للمتجر')))), 'home');
 }
 
 /* ---------- الموجّه ---------- */
@@ -394,6 +475,7 @@ async function route() {
     else if (parts[0] === 'track') await viewTrack(parts[1], /new=1/.test(qs || ''));
     else if (parts[0] === 'orders') await viewOrders();
     else if (parts[0] === 'contact') await viewContact();
+    else if (parts[0] === 'privacy') await viewPrivacy();
     else await viewHome();
   } catch (e) { app.replaceChildren(h('div', { class: 'wrap' }, errorView(e))); }
 }

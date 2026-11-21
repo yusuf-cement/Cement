@@ -75,3 +75,7 @@ export const bagSvg = (cls = '') => h('div', {
 export function field(label, input, hint) {
   return h('label', { class: 'field' }, h('span', { class: 'lbl' }, label), input, hint ? h('small', { class: 'hint' }, hint) : null);
 }
+
+// نوع العميل في طلبات الجملة: يُكتب في أول الملاحظات ليراه فريق المبيعات في لوحة الإدارة
+export const CUST_TYPES = [['contractor', 'مقاول / مشروع (جملة)'], ['trader', 'تاجر أسمنت / موزّع (جملة الجملة)'], ['other', 'أخرى']];
+export const custNote = (type, note) => `نوع العميل: ${(CUST_TYPES.find((t) => t[0] === type) || CUST_TYPES[2])[1]}` + (note && String(note).trim() ? '\n' + String(note).trim() : '');

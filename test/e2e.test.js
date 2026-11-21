@@ -430,3 +430,23 @@ test('التقارير بتوقيت اليمن: تسليم 22:30 بتوقيت UT
   const prev = await call('GET', '/api/admin/reports?from=2031-03-09&to=2031-03-09', undefined, owner);
   assert.equal(prev.json.sales.orders, 0);
 });
+
+test('إعدادات الوكالة والخريطة: تظهر للعامة، وتُرفض إحداثيات خارج اليمن، وسياسة الأمان تسمح بخرائط OSM فقط', async () => {
+  staff = await login('staff1', 'staff-pass-123'); // الاستعادة السابقة تمسح كل الجلسات
+  const pub = (await call('GET', '/api/catalog')).json.store;
+  assert.match(pub.agent_note, /أسمنت حضرموت/);
+  assert.equal(pub.map_lat, '15.4606'); assert.equal(pub.map_lng, '45.3261');
+  assert.equal(pub.wholesale_min_bags, '200');
+  assert.equal((await call('PUT', '/api/admin/settings', { map_lat: '48.85' }, owner)).status, 400);
+  assert.equal((await call('PUT', '/api/admin/settings', { map_lng: '2.35' }, owner)).status, 400);
+  assert.equal((await call('PUT', '/api/admin/settings', { map_lat: 'abc' }, owner)).status, 400);
+  assert.equal((await call('PUT', '/api/admin/settings', { map_lat: '15.5' }, staff)).status, 403);
+  assert.equal((await call('PUT', '/api/admin/settings', { map_lat: '١٥.٥٢', map_lng: '45.4', agent_note: '' }, owner)).status, 200);
+  const after = (await call('GET', '/api/catalog')).json.store;
+  assert.equal(after.map_lat, '15.52'); assert.equal(after.map_lng, '45.4'); assert.equal(after.agent_note, '');
+  await call('PUT', '/api/admin/settings', { map_lat: '15.4606', map_lng: '45.3261', agent_note: 'وكيل معتمد لأسمنت حضرموت (الشركة العربية اليمنية للأسمنت)' }, owner);
+  const csp = (await fetch(base + '/')).headers.get('content-security-policy');
+  assert.match(csp, /frame-src https:\/\/www\.openstreetmap\.org;/);
+  assert.match(csp, /default-src 'self'/); assert.match(csp, /frame-ancestors 'none'/);
+  assert.doesNotMatch(csp, /frame-src[^;]*\*/);
+});
